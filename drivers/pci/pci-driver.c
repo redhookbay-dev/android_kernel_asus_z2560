@@ -1032,10 +1032,12 @@ static int pci_pm_runtime_suspend(struct device *dev)
 	if (!pm || !pm->runtime_suspend)
 		return -ENOSYS;
 
+	pci_dev->no_d3cold = false;
 	error = pm->runtime_suspend(dev);
-	suspend_report_result(pm->runtime_suspend, error);
 	if (error)
 		return error;
+	if (!pci_dev->d3cold_allowed)
+		pci_dev->no_d3cold = true;
 
 	pci_fixup_device(pci_fixup_suspend, pci_dev);
 
@@ -1047,16 +1049,17 @@ static int pci_pm_runtime_suspend(struct device *dev)
 		return 0;
 	}
 
-	if (!pci_dev->state_saved)
+	if (!pci_dev->state_saved) {
 		pci_save_state(pci_dev);
-
-	pci_finish_runtime_suspend(pci_dev);
+		pci_finish_runtime_suspend(pci_dev);
+	}
 
 	return 0;
 }
 
 static int pci_pm_runtime_resume(struct device *dev)
 {
+	int rc;
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 
@@ -1067,7 +1070,11 @@ static int pci_pm_runtime_resume(struct device *dev)
 	__pci_enable_wake(pci_dev, PCI_D0, true, false);
 	pci_fixup_device(pci_fixup_resume, pci_dev);
 
-	return pm->runtime_resume(dev);
+	rc = pm->runtime_resume(dev);
+
+	pci_dev->runtime_d3cold = false;
+
+	return rc;
 }
 
 static int pci_pm_runtime_idle(struct device *dev)

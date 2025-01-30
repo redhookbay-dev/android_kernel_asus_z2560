@@ -19,7 +19,15 @@ const struct intel_gtt {
 	dma_addr_t scratch_page_dma;
 	/* for ppgtt PDE access */
 	u32 __iomem *gtt;
+	/* needed for ioremap in drm/i915 */
+	phys_addr_t gma_bus_addr;
 } *intel_gtt_get(void);
+
+int intel_gmch_probe(struct pci_dev *bridge_pdev, struct pci_dev *gpu_pdev,
+		     struct agp_bridge_data *bridge);
+void intel_gmch_remove(void);
+
+bool intel_enable_gtt(void);
 
 void intel_gtt_chipset_flush(void);
 void intel_gtt_unmap_memory(struct scatterlist *sg_list, int num_sg);
@@ -40,6 +48,7 @@ void intel_gtt_insert_pages(unsigned int first_entry, unsigned int num_entries,
 /* New caching attributes for gen6/sandybridge */
 #define AGP_USER_CACHED_MEMORY_LLC_MLC (AGP_USER_TYPES + 2)
 #define AGP_USER_UNCACHED_MEMORY (AGP_USER_TYPES + 4)
+#define AGP_USER_ENCODED (1 << 31)
 
 /* flag for GFDT type */
 #define AGP_USER_CACHED_MEMORY_GFDT (1 << 3)

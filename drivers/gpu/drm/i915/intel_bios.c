@@ -28,6 +28,7 @@
 #include <drm/drm_dp_helper.h>
 #include "drmP.h"
 #include "drm.h"
+#include "intel_drv.h"
 #include "i915_drm.h"
 #include "i915_drv.h"
 #include "intel_bios.h"
@@ -292,6 +293,11 @@ parse_sdvo_panel_data(struct drm_i915_private *dev_priv,
 	int index;
 
 	index = i915_vbt_sdvo_panel_type;
+	if (index == -2) {
+		DRM_DEBUG_KMS("Ignore SDVO panel mode from BIOS VBT tables.\n");
+		return;
+	}
+
 	if (index == -1) {
 		struct bdb_sdvo_lvds_options *sdvo_lvds_options;
 
@@ -368,11 +374,11 @@ parse_general_definitions(struct drm_i915_private *dev_priv,
 		if (block_size >= sizeof(*general)) {
 			int bus_pin = general->crt_ddc_gmbus_pin;
 			DRM_DEBUG_KMS("crt_ddc_bus_pin: %d\n", bus_pin);
-			if (bus_pin >= 1 && bus_pin <= 6)
+			if (intel_gmbus_is_port_valid(bus_pin))
 				dev_priv->crt_ddc_pin = bus_pin;
 		} else {
 			DRM_DEBUG_KMS("BDB_GD too small (%d). Invalid.\n",
-				  block_size);
+				      block_size);
 		}
 	}
 }
@@ -495,8 +501,12 @@ parse_edp(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
 
 	edp = find_section(bdb, BDB_EDP);
 	if (!edp) {
-		if (SUPPORTS_EDP(dev_priv->dev) && dev_priv->edp.support)
-			DRM_DEBUG_KMS("No eDP BDB found but eDP panel supported.\n");
+		if (SUPPORTS_EDP(dev_priv->dev) && dev_priv->edp.support) {
+			DRM_DEBUG_KMS("No eDP BDB found but eDP panel "
+				      "supported, assume %dbpp panel color "
+				      "depth.\n",
+				      dev_priv->edp.bpp);
+		}
 		return;
 	}
 
@@ -560,6 +570,24 @@ parse_edp(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
 		dev_priv->edp.vswing = DP_TRAIN_VOLTAGE_SWING_1200;
 		break;
 	}
+}
+
+static void
+parse_mipi(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
+{
+	/* TBD:
+	 * Change VBT parsing when IAFW is ready with VBT
+	 * For now hardcode the useful values for mipi,
+	 * though we can read from VBT from EFI BIOS
+	 */
+	struct bdb_mipi *mipi;
+	mipi = find_section(bdb, BDB_MIPI);
+	if (!mipi) {
+		DRM_DEBUG_KMS("No MIPI BDB found");
+		return;
+	}
+
+	dev_priv->mipi.panel_id = mipi->panel_id;
 }
 
 static void
@@ -649,6 +677,9 @@ init_vbt_defaults(struct drm_i915_private *dev_priv)
 	dev_priv->lvds_use_ssc = 1;
 	dev_priv->lvds_ssc_freq = intel_bios_ssc_frequency(dev, 1);
 	DRM_DEBUG_KMS("Set default to SSC at %dMHz\n", dev_priv->lvds_ssc_freq);
+
+	/* eDP data */
+	dev_priv->edp.bpp = 18;
 }
 
 static int __init intel_no_opregion_vbt_callback(const struct dmi_system_id *id)
@@ -680,7 +711,7 @@ static const struct dmi_system_id intel_no_opregion_vbt[] = {
  *
  * Returns 0 on success, nonzero on failure.
  */
-bool
+int
 intel_parse_bios(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -736,6 +767,7 @@ intel_parse_bios(struct drm_device *dev)
 	parse_device_mapping(dev_priv, bdb);
 	parse_driver_features(dev_priv, bdb);
 	parse_edp(dev_priv, bdb);
+	parse_mipi(dev_priv, bdb);
 
 	if (bios)
 		pci_unmap_rom(pdev, bios);

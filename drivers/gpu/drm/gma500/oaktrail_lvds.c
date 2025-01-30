@@ -22,7 +22,7 @@
 
 #include <linux/i2c.h>
 #include <drm/drmP.h>
-#include <asm/mrst.h>
+#include <asm/intel-mid.h>
 
 #include "intel_bios.h"
 #include "psb_drv.h"
@@ -224,25 +224,25 @@ static const struct drm_encoder_helper_funcs oaktrail_lvds_helper_funcs = {
 static struct drm_display_mode lvds_configuration_modes[] = {
 	/* hard coded fixed mode for TPO LTPS LPJ040K001A */
 	{ DRM_MODE("800x480",  DRM_MODE_TYPE_DRIVER, 33264, 800, 836,
-		   846, 1056, 0, 480, 489, 491, 525, 0, 0) },
+		   846, 1056, 0, 480, 489, 491, 525, 0, 0, 0) },
 	/* hard coded fixed mode for LVDS 800x480 */
 	{ DRM_MODE("800x480",  DRM_MODE_TYPE_DRIVER, 30994, 800, 801,
-		   802, 1024, 0, 480, 481, 482, 525, 0, 0) },
+		   802, 1024, 0, 480, 481, 482, 525, 0, 0, 0) },
 	/* hard coded fixed mode for Samsung 480wsvga LVDS 1024x600@75 */
 	{ DRM_MODE("1024x600", DRM_MODE_TYPE_DRIVER, 53990, 1024, 1072,
-		   1104, 1184, 0, 600, 603, 604, 608, 0, 0) },
+		   1104, 1184, 0, 600, 603, 604, 608, 0, 0, 0) },
 	/* hard coded fixed mode for Samsung 480wsvga LVDS 1024x600@75 */
 	{ DRM_MODE("1024x600", DRM_MODE_TYPE_DRIVER, 53990, 1024, 1104,
-		   1136, 1184, 0, 600, 603, 604, 608, 0, 0) },
+		   1136, 1184, 0, 600, 603, 604, 608, 0, 0, 0) },
 	/* hard coded fixed mode for Sharp wsvga LVDS 1024x600 */
 	{ DRM_MODE("1024x600", DRM_MODE_TYPE_DRIVER, 48885, 1024, 1124,
-		   1204, 1312, 0, 600, 607, 610, 621, 0, 0) },
+		   1204, 1312, 0, 600, 607, 610, 621, 0, 0, 0) },
 	/* hard coded fixed mode for LVDS 1024x768 */
 	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 65000, 1024, 1048,
-		   1184, 1344, 0, 768, 771, 777, 806, 0, 0) },
+		   1184, 1344, 0, 768, 771, 777, 806, 0, 0, 0) },
 	/* hard coded fixed mode for LVDS 1366x768 */
 	{ DRM_MODE("1366x768", DRM_MODE_TYPE_DRIVER, 77500, 1366, 1430,
-		   1558, 1664, 0, 768, 769, 770, 776, 0, 0) },
+		   1558, 1664, 0, 768, 769, 770, 776, 0, 0, 0) },
 };
 
 /* Returns the panel fixed mode from configuration. */
@@ -257,7 +257,7 @@ static void oaktrail_lvds_get_configuration_mode(struct drm_device *dev,
 	mode_dev->panel_fixed_mode = NULL;
 
 	/* Use the firmware provided data on Moorestown */
-	if (dev_priv->vbt_data.size != 0x00) { /*if non-zero, then use vbt*/
+	if (dev_priv->has_gct) {
 		mode = kzalloc(sizeof(*mode), GFP_KERNEL);
 		if (!mode)
 			return;
@@ -371,7 +371,7 @@ void oaktrail_lvds_init(struct drm_device *dev,
 					BRIGHTNESS_MAX_LEVEL);
 
 	mode_dev->panel_wants_dither = false;
-	if (dev_priv->vbt_data.size != 0x00)
+	if (dev_priv->has_gct)
 		mode_dev->panel_wants_dither = (dev_priv->gct_data.
 			Panel_Port_Control & MRST_PANEL_8TO6_DITHER_ENABLE);
         if (dev_priv->lvds_dither)

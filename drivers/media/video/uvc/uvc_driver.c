@@ -1727,7 +1727,7 @@ static int uvc_register_video(struct uvc_device *dev,
 	stream->vdev = vdev;
 	video_set_drvdata(vdev, stream);
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_GRABBER, 4);
 	if (ret < 0) {
 		uvc_printk(KERN_ERR, "Failed to register video device (%d).\n",
 			   ret);
@@ -2396,6 +2396,16 @@ static struct usb_device_id uvc_ids[] = {
 	  .bInterfaceProtocol	= 0,
 	  .driver_info		= UVC_QUIRK_PROBE_MINMAX
 				| UVC_QUIRK_IGNORE_SELECTOR_UNIT },
+	/* ASUS++ Chicony CNFCHA6 USB Camera */
+        { .match_flags          = USB_DEVICE_ID_MATCH_DEVICE
+                                | USB_DEVICE_ID_MATCH_INT_INFO,
+          .idVendor             = 0x04f2,
+          .idProduct            = 0xb3ff,
+          .bInterfaceClass      = USB_CLASS_VIDEO,
+          .bInterfaceSubClass   = 1,
+          .bInterfaceProtocol   = 0,
+          .driver_info          = UVC_QUIRK_PROBE_MINMAX
+                                | UVC_QUIRK_IGNORE_SELECTOR_UNIT },
 	/* Generic USB Video Class */
 	{ USB_INTERFACE_INFO(USB_CLASS_VIDEO, 1, 0) },
 	{}

@@ -66,6 +66,8 @@
 
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#include <acpi/acpi.h>
+#include "../../acpi/acpica/achware.h"
 #include "xhci.h"
 
 static int handle_cmd_in_cmd_wait_list(struct xhci_hcd *xhci,
@@ -776,6 +778,11 @@ static void handle_stopped_endpoint(struct xhci_hcd *xhci,
 	memset(&deq_state, 0, sizeof(deq_state));
 	slot_id = TRB_TO_SLOT_ID(le32_to_cpu(trb->generic.field[3]));
 	ep_index = TRB_TO_EP_INDEX(le32_to_cpu(trb->generic.field[3]));
+	if (!xhci->devs[slot_id]) {
+		xhci_warn(xhci, "Stop endpoint command completion for "
+				"disabled slot\n");
+		return;
+	}
 	ep = &xhci->devs[slot_id]->eps[ep_index];
 
 	if (list_empty(&ep->cancelled_td_list)) {
@@ -1063,6 +1070,12 @@ static void handle_set_deq_completion(struct xhci_hcd *xhci,
 	stream_id = TRB_TO_STREAM_ID(le32_to_cpu(trb->generic.field[2]));
 	dev = xhci->devs[slot_id];
 
+	if (!dev) {
+		xhci_warn(xhci, "WARN Set TR deq ptr command for "
+				"disabled slot\n");
+		return;
+	}
+
 	ep_ring = xhci_stream_id_to_ring(dev, ep_index, stream_id);
 	if (!ep_ring) {
 		xhci_warn(xhci, "WARN Set TR deq ptr command for "
@@ -1144,9 +1157,16 @@ static void handle_reset_ep_completion(struct xhci_hcd *xhci,
 {
 	int slot_id;
 	unsigned int ep_index;
+	struct xhci_virt_device *dev;
 
 	slot_id = TRB_TO_SLOT_ID(le32_to_cpu(trb->generic.field[3]));
 	ep_index = TRB_TO_EP_INDEX(le32_to_cpu(trb->generic.field[3]));
+	dev = xhci->devs[slot_id];
+	if (!dev) {
+		xhci_warn(xhci, "WARN reset ep command for "
+				"disabled slot\n");
+		return;
+	}
 	/* This command will only fail if the endpoint wasn't halted,
 	 * but we don't care.
 	 */
@@ -1412,6 +1432,11 @@ static void handle_cmd_completion(struct xhci_hcd *xhci,
 		break;
 	case TRB_TYPE(TRB_CONFIG_EP):
 		virt_dev = xhci->devs[slot_id];
+		if (!virt_dev) {
+			xhci_warn(xhci, "TRB_CONFIG_EP cmd completion "
+					"for disabled slot\n");
+			break;
+		}
 		if (handle_cmd_in_cmd_wait_list(xhci, virt_dev, event))
 			break;
 		/*
@@ -1457,13 +1482,25 @@ bandwidth_change:
 		break;
 	case TRB_TYPE(TRB_EVAL_CONTEXT):
 		virt_dev = xhci->devs[slot_id];
+		if (!virt_dev) {
+			xhci_warn(xhci, "TRB_EVAL_CONTEXT cmd completion "
+					"for disabled slot\n");
+			break;
+		}
 		if (handle_cmd_in_cmd_wait_list(xhci, virt_dev, event))
 			break;
 		xhci->devs[slot_id]->cmd_status = GET_COMP_CODE(le32_to_cpu(event->status));
 		complete(&xhci->devs[slot_id]->cmd_completion);
 		break;
 	case TRB_TYPE(TRB_ADDR_DEV):
-		xhci->devs[slot_id]->cmd_status = GET_COMP_CODE(le32_to_cpu(event->status));
+		virt_dev = xhci->devs[slot_id];
+		if (!virt_dev) {
+			xhci_warn(xhci, "TRB_ADDR_DEV cmd completion "
+					"for disabled slot\n");
+			break;
+		}
+		virt_dev->cmd_status =
+			GET_COMP_CODE(le32_to_cpu(event->status));
 		complete(&xhci->addr_dev);
 		break;
 	case TRB_TYPE(TRB_STOP_RING):
@@ -1657,6 +1694,13 @@ static void handle_port_status(struct xhci_hcd *xhci,
 			goto cleanup;
 		}
 
+#ifdef CONFIG_USB_SUSPEND
+		/* add 5s time-out wakelock for delay system suspend */
+		wake_lock_timeout(&hcd->wake_lock, 5 * HZ);
+		xhci_dbg(xhci,
+			"%s add 5s wake_lock for port connect change\n",
+			__func__);
+#endif
 		if (DEV_SUPERSPEED(temp)) {
 			xhci_dbg(xhci, "remote wake SS port %d\n", port_id);
 			/* Set a flag to say the port signaled remote wakeup,
@@ -2314,6 +2358,8 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 
 	slot_id = TRB_TO_SLOT_ID(le32_to_cpu(event->flags));
 	xdev = xhci->devs[slot_id];
+	event_dma = le64_to_cpu(event->buffer);
+	trb_comp_code = GET_COMP_CODE(le32_to_cpu(event->transfer_len));
 	if (!xdev) {
 		xhci_err(xhci, "ERROR Transfer event pointed to bad slot\n");
 		xhci_err(xhci, "@%016llx %08x %08x %08x %08x\n",
@@ -2331,12 +2377,20 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 
 	/* Endpoint ID is 1 based, our index is zero based */
 	ep_index = TRB_TO_EP_ID(le32_to_cpu(event->flags)) - 1;
+	if (ep_index == -1) {
+		xhci_err(xhci, "ERROR event endpoint index should start from one\n ");
+		return -EINVAL;
+	}
 	ep = &xdev->eps[ep_index];
 	ep_ring = xhci_dma_to_transfer_ring(ep, le64_to_cpu(event->buffer));
 	ep_ctx = xhci_get_ep_ctx(xhci, xdev->out_ctx, ep_index);
 	if (!ep_ring ||
 	    (le32_to_cpu(ep_ctx->ep_info) & EP_STATE_MASK) ==
 	    EP_STATE_DISABLED) {
+		if (trb_comp_code == COMP_OVERRUN) {
+			xhci_dbg(xhci, "overrun event on endpoint\n");
+			goto cleanup;
+		}
 		xhci_err(xhci, "ERROR Transfer event for disabled endpoint "
 				"or incorrect stream ring\n");
 		xhci_err(xhci, "@%016llx %08x %08x %08x %08x\n",
@@ -2358,8 +2412,6 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 			td_num++;
 	}
 
-	event_dma = le64_to_cpu(event->buffer);
-	trb_comp_code = GET_COMP_CODE(le32_to_cpu(event->transfer_len));
 	/* Look for common error cases */
 	switch (trb_comp_code) {
 	/* Skip codes that require special handling depending on
@@ -2789,6 +2841,51 @@ hw_died:
 
 	return IRQ_HANDLED;
 }
+
+#ifdef CONFIG_ACPI
+irqreturn_t xhci_byt_pm_irq(int irq, struct usb_hcd *hcd)
+{
+	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+	u32			gpe_sts;
+	u32			gpe_en;
+	u32			pme_sts;
+
+	/* PME status from PMC side for XHCI */
+	pme_sts = readl(xhci->pmc_base_addr + 0xc0);
+
+	/* GPE_PME status from ACPI register */
+	acpi_hw_register_read(0xf1, &gpe_sts);
+
+	xhci_dbg(xhci, "xhci_pm_irq: pmc_pme_sts = 0x%x, gpe_sts = 0x%x\n",
+			pme_sts, gpe_sts);
+
+	/* 0x2000(bit 13) is PME_B0_STS for XHCI */
+	if (gpe_sts & 0x2000) {
+		if (work_busy(&xhci->pm_check)) {
+			xhci_dbg(xhci, "pm_check work busy\n");
+			return IRQ_HANDLED;
+		}
+
+		/* clear PME_B0 bit in GPE0_EN(0xf2) to disable interrupt */
+		acpi_hw_register_read(0xf2, &gpe_en);
+		gpe_en = gpe_en & (~0x2000);
+		acpi_hw_register_write(0xf2, gpe_en);
+		xhci_dbg(xhci, "clear GPE_EN\n");
+
+		spin_lock(&xhci->lock);
+		if (!xhci->pm_check_flag) {
+			xhci_dbg(xhci, "schedule work to handle PME\n");
+			xhci->pm_check_flag = 1;
+			schedule_work(&xhci->pm_check);
+		}
+		spin_unlock(&xhci->lock);
+
+		return IRQ_HANDLED;
+	}
+
+	return IRQ_NONE;
+}
+#endif
 
 irqreturn_t xhci_msi_irq(int irq, struct usb_hcd *hcd)
 {

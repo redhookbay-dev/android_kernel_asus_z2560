@@ -37,6 +37,7 @@
 #define SIL164_ADDR	0x38
 #define CH7xxx_ADDR	0x76
 #define TFP410_ADDR	0x38
+#define NS2501_ADDR     0x38
 
 static const struct intel_dvo_device intel_dvo_devices[] = {
 	{
@@ -74,7 +75,14 @@ static const struct intel_dvo_device intel_dvo_devices[] = {
 		.slave_addr = 0x75,
 		.gpio = GMBUS_PORT_DPB,
 		.dev_ops = &ch7017_ops,
-	}
+	},
+	{
+	        .type = INTEL_DVO_CHIP_TMDS,
+		.name = "ns2501",
+		.dvo_reg = DVOC,
+		.slave_addr = NS2501_ADDR,
+		.dev_ops = &ns2501_ops,
+       }
 };
 
 struct intel_dvo {
@@ -102,8 +110,10 @@ static void intel_dvo_dpms(struct drm_encoder *encoder, int mode)
 	struct drm_i915_private *dev_priv = encoder->dev->dev_private;
 	struct intel_dvo *intel_dvo = enc_to_intel_dvo(encoder);
 	u32 dvo_reg = intel_dvo->dev.dvo_reg;
-	u32 temp = I915_READ(dvo_reg);
+	u32 temp;
 
+	i915_rpm_get_callback(encoder->dev);
+	temp = I915_READ(dvo_reg);
 	if (mode == DRM_MODE_DPMS_ON) {
 		I915_WRITE(dvo_reg, temp | DVO_ENABLE);
 		I915_READ(dvo_reg);
@@ -113,6 +123,7 @@ static void intel_dvo_dpms(struct drm_encoder *encoder, int mode)
 		I915_WRITE(dvo_reg, temp & ~DVO_ENABLE);
 		I915_READ(dvo_reg);
 	}
+	i915_rpm_put_callback(encoder->dev);
 }
 
 static int intel_dvo_mode_valid(struct drm_connector *connector,
@@ -136,7 +147,7 @@ static int intel_dvo_mode_valid(struct drm_connector *connector,
 }
 
 static bool intel_dvo_mode_fixup(struct drm_encoder *encoder,
-				 struct drm_display_mode *mode,
+				 const struct drm_display_mode *mode,
 				 struct drm_display_mode *adjusted_mode)
 {
 	struct intel_dvo *intel_dvo = enc_to_intel_dvo(encoder);
@@ -179,6 +190,7 @@ static void intel_dvo_mode_set(struct drm_encoder *encoder,
 	u32 dvo_reg = intel_dvo->dev.dvo_reg, dvo_srcdim_reg;
 	int dpll_reg = DPLL(pipe);
 
+	i915_rpm_get_callback(dev);
 	switch (dvo_reg) {
 	case DVOA:
 	default:
@@ -218,6 +230,7 @@ static void intel_dvo_mode_set(struct drm_encoder *encoder,
 		   (adjusted_mode->vdisplay << DVO_SRCDIM_VERTICAL_SHIFT));
 	/*I915_WRITE(DVOB, dvo_val);*/
 	I915_WRITE(dvo_reg, dvo_val);
+	i915_rpm_put_callback(dev);
 }
 
 /**
@@ -243,7 +256,7 @@ static int intel_dvo_get_modes(struct drm_connector *connector)
 	 * that's not the case.
 	 */
 	intel_ddc_get_modes(connector,
-			    &dev_priv->gmbus[GMBUS_PORT_DPC].adapter);
+			    intel_gmbus_get_adapter(dev_priv, GMBUS_PORT_DPC));
 	if (!list_empty(&connector->probed_modes))
 		return 1;
 
@@ -375,7 +388,7 @@ void intel_dvo_init(struct drm_device *dev)
 		 * special cases, but otherwise default to what's defined
 		 * in the spec.
 		 */
-		if (dvo->gpio != 0)
+		if (intel_gmbus_is_port_valid(dvo->gpio))
 			gpio = dvo->gpio;
 		else if (dvo->type == INTEL_DVO_CHIP_LVDS)
 			gpio = GMBUS_PORT_SSC;
@@ -386,7 +399,7 @@ void intel_dvo_init(struct drm_device *dev)
 		 * It appears that everything is on GPIOE except for panels
 		 * on i830 laptops, which are on GPIOB (DVOA).
 		 */
-		i2c = &dev_priv->gmbus[gpio].adapter;
+		i2c = intel_gmbus_get_adapter(dev_priv, gpio);
 
 		intel_dvo->dev = *dvo;
 		if (!dvo->dev_ops->init(&intel_dvo->dev, i2c))
@@ -396,17 +409,14 @@ void intel_dvo_init(struct drm_device *dev)
 		intel_encoder->crtc_mask = (1 << 0) | (1 << 1);
 		switch (dvo->type) {
 		case INTEL_DVO_CHIP_TMDS:
-			intel_encoder->clone_mask =
-				(1 << INTEL_DVO_TMDS_CLONE_BIT) |
-				(1 << INTEL_ANALOG_CLONE_BIT);
+			intel_encoder->cloneable = true;
 			drm_connector_init(dev, connector,
 					   &intel_dvo_connector_funcs,
 					   DRM_MODE_CONNECTOR_DVII);
 			encoder_type = DRM_MODE_ENCODER_TMDS;
 			break;
 		case INTEL_DVO_CHIP_LVDS:
-			intel_encoder->clone_mask =
-				(1 << INTEL_DVO_LVDS_CLONE_BIT);
+			intel_encoder->cloneable = false;
 			drm_connector_init(dev, connector,
 					   &intel_dvo_connector_funcs,
 					   DRM_MODE_CONNECTOR_LVDS);

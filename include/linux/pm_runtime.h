@@ -12,6 +12,7 @@
 #include <linux/device.h>
 #include <linux/notifier.h>
 #include <linux/pm.h>
+#include <trace/events/power.h>
 
 #include <linux/jiffies.h>
 
@@ -57,11 +58,13 @@ static inline bool pm_children_suspended(struct device *dev)
 static inline void pm_runtime_get_noresume(struct device *dev)
 {
 	atomic_inc(&dev->power.usage_count);
+	trace_runtime_pm_usage(dev, atomic_read(&dev->power.usage_count));
 }
 
 static inline void pm_runtime_put_noidle(struct device *dev)
 {
 	atomic_add_unless(&dev->power.usage_count, -1, 0);
+	trace_runtime_pm_usage(dev, atomic_read(&dev->power.usage_count));
 }
 
 static inline bool device_run_wake(struct device *dev)
@@ -149,9 +152,6 @@ static inline void pm_runtime_set_autosuspend_delay(struct device *dev,
 						int delay) {}
 static inline unsigned long pm_runtime_autosuspend_expiration(
 				struct device *dev) { return 0; }
-
-static inline void pm_runtime_update_max_time_suspended(struct device *dev,
-							s64 delta_ns) {}
 
 #endif /* !CONFIG_PM_RUNTIME */
 

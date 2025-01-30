@@ -439,8 +439,8 @@ void __weak arch_enable_nonboot_cpus_begin(void)
 void __weak arch_enable_nonboot_cpus_end(void)
 {
 }
-
-void __ref enable_nonboot_cpus(void)
+#if defined(CONFIG_ME372CG) || defined(CONFIG_ME372CL)
+void __ref async_enable_CPUS(struct work_struct *work)
 {
 	int cpu, error;
 
@@ -469,6 +469,44 @@ void __ref enable_nonboot_cpus(void)
 out:
 	cpu_maps_update_done();
 }
+static DECLARE_WORK(async_enable_CPUS_work,async_enable_CPUS);
+
+void __ref enable_nonboot_cpus(void)
+{
+        schedule_work(&async_enable_CPUS_work);
+}
+
+#else
+void __ref enable_nonboot_cpus(void)
+{
+        int cpu, error;
+
+        /* Allow everyone to use the CPU hotplug again */
+        cpu_maps_update_begin();
+        cpu_hotplug_disabled = 0;
+        if (cpumask_empty(frozen_cpus))
+                goto out;
+
+        printk(KERN_INFO "Enabling non-boot CPUs ...\n");
+
+        arch_enable_nonboot_cpus_begin();
+
+        for_each_cpu(cpu, frozen_cpus) {
+                error = _cpu_up(cpu, 1);
+                if (!error) {
+                        printk(KERN_INFO "CPU%d is up\n", cpu);
+                        continue;
+                }
+                printk(KERN_WARNING "Error taking CPU%d up: %d\n", cpu, error);
+        }
+
+        arch_enable_nonboot_cpus_end();
+
+        cpumask_clear(frozen_cpus);
+out:
+        cpu_maps_update_done();
+}
+#endif
 
 static int __init alloc_frozen_cpus(void)
 {
@@ -668,3 +706,23 @@ void init_cpu_online(const struct cpumask *src)
 {
 	cpumask_copy(to_cpumask(cpu_online_bits), src);
 }
+
+static ATOMIC_NOTIFIER_HEAD(idle_notifier);
+
+void idle_notifier_register(struct notifier_block *n)
+{
+	atomic_notifier_chain_register(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_register);
+
+void idle_notifier_unregister(struct notifier_block *n)
+{
+	atomic_notifier_chain_unregister(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_unregister);
+
+void idle_notifier_call_chain(unsigned long val)
+{
+	atomic_notifier_call_chain(&idle_notifier, val, NULL);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_call_chain);

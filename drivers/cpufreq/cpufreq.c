@@ -1502,6 +1502,31 @@ int __cpufreq_driver_getavg(struct cpufreq_policy *policy, unsigned int cpu)
 }
 EXPORT_SYMBOL_GPL(__cpufreq_driver_getavg);
 
+#ifdef CONFIG_COUNT_GPU_BLOCKING_TIME
+int __cpufreq_driver_getload(struct cpufreq_policy *policy,
+				unsigned int cpu, unsigned int *gpu_block_load)
+#else
+int __cpufreq_driver_getload(struct cpufreq_policy *policy, unsigned int cpu)
+#endif
+{
+	int ret = 0;
+
+	policy = cpufreq_cpu_get(policy->cpu);
+	if (!policy)
+		return -EINVAL;
+
+	if (cpu_online(cpu) && cpufreq_driver->getload)
+#ifdef CONFIG_COUNT_GPU_BLOCKING_TIME
+		ret = cpufreq_driver->getload(policy, cpu, gpu_block_load);
+#else
+		ret = cpufreq_driver->getload(policy, cpu);
+#endif
+
+	cpufreq_cpu_put(policy);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(__cpufreq_driver_getload);
+
 /*
  * when "event" is CPUFREQ_GOV_LIMITS
  */
@@ -1790,18 +1815,16 @@ static int __cpuinit cpufreq_cpu_callback(struct notifier_block *nfb,
 	if (dev) {
 		switch (action) {
 		case CPU_ONLINE:
-		case CPU_ONLINE_FROZEN:
 			cpufreq_add_dev(dev, NULL);
 			break;
 		case CPU_DOWN_PREPARE:
-		case CPU_DOWN_PREPARE_FROZEN:
+		case CPU_UP_CANCELED_FROZEN:
 			if (unlikely(lock_policy_rwsem_write(cpu)))
 				BUG();
 
 			__cpufreq_remove_dev(dev, NULL);
 			break;
 		case CPU_DOWN_FAILED:
-		case CPU_DOWN_FAILED_FROZEN:
 			cpufreq_add_dev(dev, NULL);
 			break;
 		}

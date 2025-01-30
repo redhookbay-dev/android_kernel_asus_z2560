@@ -14,6 +14,8 @@
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/fault-inject.h>
+#include <linux/wakelock.h>
+#include <linux/pm_qos.h>
 
 #include <linux/mmc/core.h>
 #include <linux/mmc/pm.h>
@@ -79,6 +81,23 @@ struct mmc_ios {
 #define MMC_SET_DRIVER_TYPE_D	3
 };
 
+#define mmc_tuning_timing(mmc)	((mmc->ios.timing == MMC_TIMING_UHS_SDR50) ||\
+				(mmc->ios.timing == MMC_TIMING_MMC_HS200) ||\
+				(mmc->ios.timing == MMC_TIMING_UHS_SDR104))
+
+struct mmc_panic_host;
+
+struct mmc_host_panic_ops {
+	void	(*request)(struct mmc_panic_host *, struct mmc_request *);
+	void	(*prepare)(struct mmc_panic_host *);
+	int	(*setup)(struct mmc_panic_host *);
+	void	(*set_ios)(struct mmc_panic_host *);
+	void	(*dumpregs)(struct mmc_panic_host *);
+	int	(*power_on)(struct mmc_panic_host *);
+	int	(*hold_mutex)(struct mmc_panic_host *);
+	void	(*release_mutex)(struct mmc_panic_host *);
+};
+
 struct mmc_host_ops {
 	/*
 	 * 'enable' is called when the host is claimed and 'disable' is called
@@ -128,13 +147,17 @@ struct mmc_host_ops {
 	/* optional callback for HC quirks */
 	void	(*init_card)(struct mmc_host *host, struct mmc_card *card);
 
-	int	(*start_signal_voltage_switch)(struct mmc_host *host, struct mmc_ios *ios);
+	int	(*start_signal_voltage_switch)(struct mmc_host *host,
+			struct mmc_ios *ios, bool cmd11);
 
 	/* The tuning command opcode value is different for SD and eMMC cards */
 	int	(*execute_tuning)(struct mmc_host *host, u32 opcode);
 	void	(*enable_preset_value)(struct mmc_host *host, bool enable);
 	int	(*select_drive_strength)(unsigned int max_dtr, int host_drv, int card_drv);
 	void	(*hw_reset)(struct mmc_host *host);
+    /* Invoke in mmc_init_card, host can change the default configuration in implementation */
+    void (*change_configuration)(struct mmc_host *host, struct mmc_card *card);
+    int (*mmc_poll_busy)(struct mmc_host *host);
 };
 
 struct mmc_card;
@@ -155,19 +178,47 @@ struct mmc_hotplug {
 	void *handler_priv;
 };
 
+struct mmc_panic_host {
+	/*
+	 * DMA buffer for the log
+	 */
+	dma_addr_t	dmabuf;
+	void		*logbuf;
+	const struct mmc_host_panic_ops *panic_ops;
+	unsigned int		panic_ready;
+	unsigned int		totalsecs;
+	unsigned int		max_blk_size;
+	unsigned int		max_blk_count;
+	unsigned int		max_req_size;
+	unsigned int		blkaddr;
+	unsigned int		caps;
+	unsigned int		caps2;
+	u32			ocr;		/* the current OCR setting */
+	struct mmc_ios		ios;		/* current io bus settings */
+	struct mmc_card		*card;
+	struct mmc_host		*mmc;
+	void			*priv;
+};
+
 struct mmc_host {
 	struct device		*parent;
 	struct device		class_dev;
 	int			index;
 	const struct mmc_host_ops *ops;
 	unsigned int		f_min;
+    unsigned int		f_mid;
 	unsigned int		f_max;
+    unsigned int		f_max_card;
 	unsigned int		f_init;
 	u32			ocr_avail;
 	u32			ocr_avail_sdio;	/* SDIO-specific OCR */
 	u32			ocr_avail_sd;	/* SD-specific OCR */
 	u32			ocr_avail_mmc;	/* MMC-specific OCR */
 	struct notifier_block	pm_notify;
+        int                     retry_timeout;  /* Rescan timeout for polling mode to scan SD card */
+    unsigned int half_max_clk_count;
+    int         sd_detect_count;
+    asus_mmc_pm_flag_t asus_mmc_pm_flag;
 
 #define MMC_VDD_165_195		0x00000080	/* VDD voltage 1.65 - 1.95 */
 #define MMC_VDD_20_21		0x00000100	/* VDD voltage 2.0 ~ 2.1 */
@@ -238,12 +289,17 @@ struct mmc_host {
 #define MMC_CAP2_BROKEN_VOLTAGE	(1 << 7)	/* Use the broken voltage */
 #define MMC_CAP2_DETECT_ON_ERR	(1 << 8)	/* On I/O err check card removal */
 #define MMC_CAP2_HC_ERASE_SZ	(1 << 9)	/* High-capacity erase size */
+#define MMC_CAP2_INIT_CARD_SYNC	(1 << 10)	/* init card in sync mode */
+#define MMC_CAP2_RPMBPART_NOACC	(1 << 11)	/* RPMB partition no access */
+#define MMC_CAP2_POLL_R1B_BUSY	(1 << 12)	/* host poll R1B busy*/
+#define MMC_CAP2_LED_SUPPORT	(1 << 13)	/* led support */
+#define MMC_CAP2_PWCTRL_POWER	(1 << 14)	/* power control card power */
+#define MMC_CAP2_FIXED_NCRC	(1 << 15)	/* Fixed 2 cycles Ncrc */
+#define MMC_CAP2_PWOFF_DELAY	(1 << 16)	/* delay after power off */
+#define MMC_CAP2_BROKEN_MAX_CLK (1 << 17)   /* indicated the maximum clock may not stable enough */
+#define MMC_CAP2_DEFERRED_RESUME (1 << 18)  /* indicate whether the card resume process is deferable */
 
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
-	unsigned int        power_notify_type;
-#define MMC_HOST_PW_NOTIFY_NONE		0
-#define MMC_HOST_PW_NOTIFY_SHORT	1
-#define MMC_HOST_PW_NOTIFY_LONG		2
 
 #ifdef CONFIG_MMC_CLKGATE
 	int			clk_requests;	/* internal reference counter */
@@ -289,11 +345,16 @@ struct mmc_host {
 	int			claim_cnt;	/* "claim" nesting count */
 
 	struct delayed_work	detect;
+	struct wake_lock	detect_wake_lock;
 	int			detect_change;	/* card detect flag */
 	struct mmc_hotplug	hotplug;
 
 	const struct mmc_bus_ops *bus_ops;	/* current bus driver */
 	unsigned int		bus_refs;	/* reference counter */
+
+	unsigned int		bus_resume_flags;
+#define MMC_BUSRESUME_MANUAL_RESUME	(1 << 0)
+#define MMC_BUSRESUME_NEEDS_RESUME	(1 << 1)
 
 	unsigned int		sdio_irqs;
 	struct task_struct	*sdio_irq_thread;
@@ -320,13 +381,43 @@ struct mmc_host {
 
 	unsigned int		actual_clock;	/* Actual HC clock rate */
 
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+	struct {
+		struct sdio_cis			*cis;
+		struct sdio_cccr		*cccr;
+		struct sdio_embedded_func	*funcs;
+		int				num_funcs;
+	} embedded_sdio_data;
+#endif
+
+	struct mmc_panic_host *phost;
+	struct pm_qos_request *qos;
 	unsigned long		private[0] ____cacheline_aligned;
 };
+
+/* h must be a pointer to "struct mmc_host" */
+#define mmc_set_force_pm_resume(h) ((h)->asus_mmc_pm_flag |= ASUS_MMC_PM_FORCE_RESUME)
+#define mmc_clr_force_pm_resume(h) ((h)->asus_mmc_pm_flag &= ~ASUS_MMC_PM_FORCE_RESUME)
+#define mmc_is_force_pm_resume(h) (!!((h)->asus_mmc_pm_flag & ASUS_MMC_PM_FORCE_RESUME))
+
+#define SECTOR_SIZE	512
+int mmc_emergency_init(void);
+int mmc_emergency_write(char *, unsigned int);
+void mmc_alloc_panic_host(struct mmc_host *, const struct mmc_host_panic_ops *);
+void mmc_emergency_setup(struct mmc_host *host);
 
 extern struct mmc_host *mmc_alloc_host(int extra, struct device *);
 extern int mmc_add_host(struct mmc_host *);
 extern void mmc_remove_host(struct mmc_host *);
 extern void mmc_free_host(struct mmc_host *);
+
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+extern void mmc_set_embedded_sdio_data(struct mmc_host *host,
+				       struct sdio_cis *cis,
+				       struct sdio_cccr *cccr,
+				       struct sdio_embedded_func *funcs,
+				       int num_funcs);
+#endif
 
 static inline void *mmc_priv(struct mmc_host *host)
 {
@@ -338,6 +429,18 @@ static inline void *mmc_priv(struct mmc_host *host)
 #define mmc_dev(x)	((x)->parent)
 #define mmc_classdev(x)	(&(x)->class_dev)
 #define mmc_hostname(x)	(dev_name(&(x)->class_dev))
+#define mmc_bus_needs_resume(host) ((host)->bus_resume_flags & MMC_BUSRESUME_NEEDS_RESUME)
+#define mmc_bus_manual_resume(host) ((host)->bus_resume_flags & MMC_BUSRESUME_MANUAL_RESUME)
+
+static inline void mmc_set_bus_resume_policy(struct mmc_host *host, int manual)
+{
+	if (manual)
+		host->bus_resume_flags |= MMC_BUSRESUME_MANUAL_RESUME;
+	else
+		host->bus_resume_flags &= ~MMC_BUSRESUME_MANUAL_RESUME;
+}
+
+extern int mmc_resume_bus(struct mmc_host *host);
 
 extern int mmc_suspend_host(struct mmc_host *);
 extern int mmc_resume_host(struct mmc_host *);
@@ -410,6 +513,11 @@ static inline int mmc_host_cmd23(struct mmc_host *host)
 static inline int mmc_boot_partition_access(struct mmc_host *host)
 {
 	return !(host->caps2 & MMC_CAP2_BOOTPART_NOACC);
+}
+
+static inline int mmc_rpmb_partition_access(struct mmc_host *host)
+{
+	return !(host->caps2 & MMC_CAP2_RPMBPART_NOACC);
 }
 
 #ifdef CONFIG_MMC_CLKGATE

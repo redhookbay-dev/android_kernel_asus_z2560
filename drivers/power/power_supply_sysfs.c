@@ -44,8 +44,9 @@ static ssize_t power_supply_show_property(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf) {
 	static char *type_text[] = {
-		"Unknown", "Battery", "UPS", "Mains", "USB",
-		"USB_DCP", "USB_CDP", "USB_ACA"
+		"Unknown", "Battery", "UPS", "Mains", "USB", "USB",
+		"USB_DCP", "USB_CDP", "USB_ACA", "USB_HOST" , "DockBattery" , "DockAC"
+		,"PadBattery" ,"PadAC", "USB_SE1"
 	};
 	static char *status_text[] = {
 		"Unknown", "Charging", "Discharging", "Not charging", "Full"
@@ -146,6 +147,7 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(voltage_min_design),
 	POWER_SUPPLY_ATTR(voltage_now),
 	POWER_SUPPLY_ATTR(voltage_avg),
+	POWER_SUPPLY_ATTR(voltage_ocv),
 	POWER_SUPPLY_ATTR(current_max),
 	POWER_SUPPLY_ATTR(current_now),
 	POWER_SUPPLY_ATTR(current_avg),
@@ -158,6 +160,14 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(charge_now),
 	POWER_SUPPLY_ATTR(charge_avg),
 	POWER_SUPPLY_ATTR(charge_counter),
+	POWER_SUPPLY_ATTR(charge_current_limit),
+	POWER_SUPPLY_ATTR(charge_control_limit),
+	POWER_SUPPLY_ATTR(charge_control_limit_max),
+	POWER_SUPPLY_ATTR(charge_current),
+	POWER_SUPPLY_ATTR(max_charge_current),
+	POWER_SUPPLY_ATTR(charge_voltage),
+	POWER_SUPPLY_ATTR(max_charge_voltage),
+	POWER_SUPPLY_ATTR(input_cur_limit),
 	POWER_SUPPLY_ATTR(energy_full_design),
 	POWER_SUPPLY_ATTR(energy_empty_design),
 	POWER_SUPPLY_ATTR(energy_full),
@@ -167,17 +177,40 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(capacity),
 	POWER_SUPPLY_ATTR(capacity_level),
 	POWER_SUPPLY_ATTR(temp),
+	POWER_SUPPLY_ATTR(max_temp),
+	POWER_SUPPLY_ATTR(min_temp),
 	POWER_SUPPLY_ATTR(temp_ambient),
 	POWER_SUPPLY_ATTR(time_to_empty_now),
 	POWER_SUPPLY_ATTR(time_to_empty_avg),
 	POWER_SUPPLY_ATTR(time_to_full_now),
 	POWER_SUPPLY_ATTR(time_to_full_avg),
 	POWER_SUPPLY_ATTR(type),
+	POWER_SUPPLY_ATTR(charge_term_cur),
+	POWER_SUPPLY_ATTR(enable_charging),
+	POWER_SUPPLY_ATTR(enable_charger),
+	POWER_SUPPLY_ATTR(cable_type),
+	POWER_SUPPLY_ATTR(priority),
 	POWER_SUPPLY_ATTR(scope),
+#ifdef CONFIG_UPI_BATTERY
+	POWER_SUPPLY_ATTR(ug31xx_debug),
+#endif
+	/* Local extensions */
+	POWER_SUPPLY_ATTR(usb_hc),
+	POWER_SUPPLY_ATTR(usb_otg),
+	POWER_SUPPLY_ATTR(charge_enabled),
 	/* Properties of type `const char *' */
 	POWER_SUPPLY_ATTR(model_name),
 	POWER_SUPPLY_ATTR(manufacturer),
 	POWER_SUPPLY_ATTR(serial_number),
+/* chris added: */
+#if defined(CONFIG_ME302C_BATTERY) || defined(CONFIG_ME372CG_BATTERY) || defined(CONFIG_TX201LA_BATTERY_EC) || defined(CONFIG_ME372CL_BATTERY) || defined(CONFIG_ME175CG_BATTERY) || defined(CONFIG_PF400CG_BATTERY) || defined(CONFIG_A400CG_BATTERY)
+	POWER_SUPPLY_ATTR(battery_id),
+	POWER_SUPPLY_ATTR(firmware_version),
+	#if defined(CONFIG_ME302C_BATTERY_BQ27520) || defined(CONFIG_ME372CG_BATTERY_BQ27520) || defined(CONFIG_TX201LA_BATTERY_EC) || defined(CONFIG_ME372CL_BATTERY)
+	POWER_SUPPLY_ATTR(chemical_id),
+	POWER_SUPPLY_ATTR(fw_cfg_version),
+	#endif
+#endif
 };
 
 static struct attribute *

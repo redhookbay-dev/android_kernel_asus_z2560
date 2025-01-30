@@ -32,6 +32,7 @@
 #include <linux/sched.h>
 #include <linux/sysfs.h>
 #include <linux/tty.h>
+#include <linux/pm_runtime.h>
 
 #include <linux/skbuff.h>
 #include <linux/ti_wilink_st.h>
@@ -125,6 +126,7 @@ void kim_int_recv(struct kim_data_s *kim_gdata,
 	const unsigned char *ptr;
 	int len = 0, type = 0;
 	unsigned char *plen;
+	unsigned int skb_end = 0, skb_tail = 0;
 
 	pr_debug("%s", __func__);
 	/* Decode received bytes here */
@@ -137,6 +139,10 @@ void kim_int_recv(struct kim_data_s *kim_gdata,
 	while (count) {
 		if (kim_gdata->rx_count) {
 			len = min_t(unsigned int, kim_gdata->rx_count, count);
+			skb_end = kim_gdata->rx_skb->end;
+			skb_tail = kim_gdata->rx_skb->tail;
+			if (unlikely((skb_end - skb_tail) < len))
+				len = skb_end - skb_tail;
 			memcpy(skb_put(kim_gdata->rx_skb, len), ptr, len);
 			kim_gdata->rx_count -= len;
 			count -= len;
@@ -165,9 +171,9 @@ void kim_int_recv(struct kim_data_s *kim_gdata,
 		}		/* end of if rx_state */
 		switch (*ptr) {
 			/* Bluetooth event packet? */
-		case 0x04:
+		case ST_BT:
 			kim_gdata->rx_state = ST_W4_HEADER;
-			kim_gdata->rx_count = 2;
+			kim_gdata->rx_count = HCI_EVENT_HDR_SIZE;
 			type = *ptr;
 			break;
 		default:
@@ -179,7 +185,7 @@ void kim_int_recv(struct kim_data_s *kim_gdata,
 		ptr++;
 		count--;
 		kim_gdata->rx_skb =
-			alloc_skb(1024+8, GFP_ATOMIC);
+			alloc_skb(HCI_MAX_FRAME_SIZE + 4, GFP_ATOMIC);
 		if (!kim_gdata->rx_skb) {
 			pr_err("can't allocate mem for new packet");
 			kim_gdata->rx_state = ST_W4_PACKET_TYPE;
@@ -445,6 +451,7 @@ long st_kim_start(void *kim_data)
 	long retry = POR_RETRY_COUNT;
 	struct ti_st_plat_data	*pdata;
 	struct kim_data_s	*kim_gdata = (struct kim_data_s *)kim_data;
+	struct device *tty_dev;
 
 	pr_info(" %s", __func__);
 	pdata = kim_gdata->kim_pdev->dev.platform_data;
@@ -454,11 +461,18 @@ long st_kim_start(void *kim_data)
 		if (pdata->chip_enable)
 			pdata->chip_enable(kim_gdata);
 
-		/* Configure BT nShutdown to HIGH state */
+		/*
+		 * Configure BT nShutdown to HIGH state
+		 * To reset the chip, nShutdown shall be asserted for
+		 * 5 ms at least. The original code provided by TI was using
+		 * mdelay to cover this requirements. Using sleepy functions is
+		 * more suitable, so usleep_range with a minimun of 5000 us is used
+		 * instead of mdelay(5).
+		 */
 		gpio_set_value(kim_gdata->nshutdown, GPIO_LOW);
-		mdelay(5);	/* FIXME: a proper toggle */
+		usleep_range(WILINK_RESET_DELAY_US, 2*WILINK_RESET_DELAY_US);
 		gpio_set_value(kim_gdata->nshutdown, GPIO_HIGH);
-		mdelay(100);
+		msleep(WILINK_BOOT_DELAY_MS);
 		/* re-initialize the completion */
 		INIT_COMPLETION(kim_gdata->ldisc_installed);
 		/* send notification to UIM */
@@ -477,8 +491,19 @@ long st_kim_start(void *kim_data)
 			continue;
 		} else {
 			/* ldisc installed now */
+			tty_dev = kim_gdata->core_data->tty_dev;
+			if (tty_dev)
+				pm_runtime_resume(tty_dev);
+
+			else
+				err = st_kim_stop(kim_gdata);
+
 			pr_info("line discipline installed");
 			err = download_firmware(kim_gdata);
+
+			if (tty_dev)
+				__pm_runtime_idle(tty_dev, 0);
+
 			if (err != 0) {
 				/* ldisc installed but fw download failed,
 				 * flush uart & power cycle BT_EN */
@@ -807,6 +832,14 @@ static int kim_remove(struct platform_device *pdev)
 int kim_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct ti_st_plat_data	*pdata = pdev->dev.platform_data;
+	struct kim_data_s *kim_data = dev_get_drvdata(&pdev->dev);
+	struct st_data_s *st_data = kim_data->core_data;
+
+	if (st_data->ll_state != ST_LL_ASLEEP &&
+	    st_data->ll_state != ST_LL_INVALID) {
+		pr_info("Shared Transport LL state : %d", st_data->ll_state);
+		return -EBUSY;
+	}
 
 	if (pdata->suspend)
 		return pdata->suspend(pdev, state);

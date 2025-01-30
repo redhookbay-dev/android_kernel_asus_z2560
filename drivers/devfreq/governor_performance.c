@@ -9,7 +9,9 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/export.h>
 #include <linux/devfreq.h>
+#include "governor.h"
 
 static int devfreq_performance_func(struct devfreq *df,
 				    unsigned long *freq)
@@ -19,14 +21,21 @@ static int devfreq_performance_func(struct devfreq *df,
 	 * said in devfreq.h
 	 */
 	if (!df->max_freq)
-		*freq = UINT_MAX;
+		*freq = ULONG_MAX;
 	else
 		*freq = df->max_freq;
 	return 0;
 }
 
+static int performance_init(struct devfreq *devfreq)
+{
+	return update_devfreq(devfreq);
+}
+
 const struct devfreq_governor devfreq_performance = {
 	.name = "performance",
+	.init = performance_init,
 	.get_target_freq = devfreq_performance_func,
 	.no_central_polling = true,
 };
+EXPORT_SYMBOL(devfreq_performance);

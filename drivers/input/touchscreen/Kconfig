@@ -91,7 +91,7 @@ config TOUCHSCREEN_ATMEL_MXT
 	depends on I2C
 	help
 	  Say Y here if you have Atmel mXT series I2C touchscreen,
-	  such as AT42QT602240/ATMXT224, connected to your system.
+	  such as ATMXT1664S/AT42QT602240/ATMXT224, connected to your system.
 
 	  If unsure, say N.
 
@@ -450,6 +450,12 @@ config TOUCHSCREEN_TNETV107X
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called tnetv107x-ts.
+
+config TOUCHSCREEN_SYNAPTICS_I2C_RMI
+	tristate "Synaptics i2c touchscreen"
+	depends on I2C
+	help
+	  This enables support for Synaptics RMI over I2C based touchscreens.
 
 config TOUCHSCREEN_TOUCHRIGHT
 	tristate "Touchright serial touchscreen"
@@ -845,4 +851,49 @@ config TOUCHSCREEN_TPS6507X
 	  To compile this driver as a module, choose M here: the
 	  module will be called tps6507x_ts.
 
+# Josh add for Himax HX8528 driver ++
+config TOUCHSCREEN_HIMAX_HX8528
+        bool "Himax HX8528 touchscreen"
+        depends on I2C
+		
+config TOUCHSCREEN_HIMAX_HX8528_ME372CGCD
+        bool "Himax HX8528 touchscreen"
+        depends on I2C
+		
+config TOUCHSCREEN_HIMAX_HX8528_ME372CL
+        bool "Himax HX8528 touchscreen"
+        depends on I2C
+
+config TOUCHSCREEN_HIMAX_HX8528_ME372CL_C58
+        bool "Himax HX8528 touchscreen"
+        depends on I2C
+		
+config TOUCHSCREEN_HIMAX_HX8528_A12
+        bool "Himax HX8528 touchscreen"
+        depends on I2C		
+# Josh add for Himax HX8528 driver ++
+
+# Jui-Chuan add for Atmel mxt1664s driver ++
+config TOUCHSCREEN_ATMEL_MXT1664S
+        tristate "ATMEL mXT1664S touchscreen"
+        depends on I2C && HID_ASUS_PAD_EC
+# Jui-Chuan add for Atmel mxt1664s driver --
+
+# add by leo for Elan EKTH3374 driver ++
+config TOUCHSCREEN_ELAN_EKTH3374
+	tristate "ELAN EKTH3374AY touchscreen"
+	depends on I2C
+# add by leo for Elan EKTH3374 driver --
+
+# add by leo for GOODIX GT927 driver ++
+config TOUCHSCREEN_GOODIX_GT927
+	tristate "GOODIX GT927 touchscreen"
+	depends on I2C
+# add by leo for GOODIX GT927 driver --
+
+# add by leo for GOODIX GT927 driver ++
+config TOUCHSCREEN_HIMAX_HX8528_P72G
+        bool "Himax HX8528 touchscreen"
+        depends on I2C		
+# add by leo for GOODIX GT927 driver --
 endif

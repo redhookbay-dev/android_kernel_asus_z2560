@@ -37,6 +37,14 @@ menuconfig GPIOLIB
 
 if GPIOLIB
 
+config OF_GPIO
+	def_bool y
+	depends on OF
+
+config GPIO_ACPI
+	def_bool y
+	depends on ACPI
+
 config DEBUG_GPIO
 	bool "Debug GPIO calls"
 	depends on DEBUG_KERNEL
@@ -59,6 +67,17 @@ config GPIO_SYSFS
 	  hardware assembled using standard kernels with a minimum of
 	  custom patches.  In those cases, userspace code may import
 	  a given GPIO from the kernel, if no kernel driver requested it.
+
+	  Kernel drivers may also request that a particular GPIO be
+	  exported to userspace; this can be useful when debugging.
+
+config GPIODEBUG
+	tristate "GPIO Setting DEBUG"
+	depends on DEBUG_FS
+	help
+	  Say yes here to support GPIO/FLIS Setting Debug.
+
+	  This is mostly useful to dump and set gpio/flis conguration.
 
 	  Kernel drivers may also request that a particular GPIO be
 	  exported to userspace; this can be useful when debugging.
@@ -202,6 +221,12 @@ config GPIO_GE_FPGA
 	  board computers.
 
 comment "I2C GPIO expanders:"
+
+config GPIO_ARIZONA
+	tristate "Wolfson Microelectronics Arizona class devices"
+	depends on MFD_ARIZONA
+	help
+	  Support for GPIOs on Wolfson Arizona class devices.
 
 config GPIO_MAX7300
 	tristate "Maxim MAX7300 GPIO expander"
@@ -401,6 +426,14 @@ config GPIO_LANGWELL
 	depends on PCI && X86
 	help
 	  Say Y here to support Intel Langwell/Penwell GPIO.
+
+config GPIO_VALLEYVIEW2
+	bool "Intel ValleyView GPIO support"
+	select IRQ_DOMAIN
+	help
+	  This driver is for Intel ValleyView.
+
+	  Say Y here to support Intel ValleyView GPIO.
 
 config GPIO_PCH
 	tristate "Intel EG20T PCH/LAPIS Semiconductor IOH(ML7223/ML7831) GPIO"

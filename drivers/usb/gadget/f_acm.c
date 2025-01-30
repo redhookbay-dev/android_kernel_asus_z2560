@@ -429,7 +429,8 @@ static int acm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		if (acm->notify->driver_data) {
 			VDBG(cdev, "reset acm control interface %d\n", intf);
 			usb_ep_disable(acm->notify);
-		} else {
+		}
+		if (!acm->notify->desc) {
 			VDBG(cdev, "init acm ctrl interface %d\n", intf);
 			if (config_ep_by_speed(cdev->gadget, f, acm->notify))
 				return -EINVAL;
@@ -608,6 +609,8 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 	struct f_acm		*acm = func_to_acm(f);
 	int			status;
 	struct usb_ep		*ep;
+	struct usb_descriptor_header **fs_function;
+	struct usb_descriptor_header **hs_function;
 
 	/* allocate instance-specific interface IDs, and patch descriptors */
 	status = usb_interface_id(c, f);
@@ -659,8 +662,19 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 	acm->notify_req->complete = acm_cdc_notify_complete;
 	acm->notify_req->context = acm;
 
+	if (c->bConfigurationValue == 4) {
+		/* Descriptors with association descriptor */
+		fs_function = acm_fs_function;
+	} else if (c->bConfigurationValue == 1) {
+		/* If define ACM for Android,
+		 * descriptors with association descriptor */
+		fs_function = acm_fs_function;
+	} else {
+		/* Descriptors without association descriptor */
+		fs_function = &acm_fs_function[1];
+	}
 	/* copy descriptors */
-	f->descriptors = usb_copy_descriptors(acm_fs_function);
+	f->descriptors = usb_copy_descriptors(fs_function);
 	if (!f->descriptors)
 		goto fail;
 
@@ -676,8 +690,19 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 		acm_hs_notify_desc.bEndpointAddress =
 				acm_fs_notify_desc.bEndpointAddress;
 
+		if (c->bConfigurationValue == 4) {
+			/* Descriptors with association descriptor */
+			hs_function = acm_hs_function;
+		} else if (c->bConfigurationValue == 1) {
+			/* If define ACM for Android,
+			 * descriptors with association descriptor */
+			hs_function = acm_hs_function;
+		} else {
+			/* Descriptors without association descriptor */
+			hs_function = &acm_hs_function[1];
+		}
 		/* copy descriptors */
-		f->hs_descriptors = usb_copy_descriptors(acm_hs_function);
+		f->hs_descriptors = usb_copy_descriptors(hs_function);
 	}
 	if (gadget_is_superspeed(c->cdev->gadget)) {
 		acm_ss_in_desc.bEndpointAddress =
@@ -721,6 +746,7 @@ acm_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct f_acm		*acm = func_to_acm(f);
 
+	acm_string_defs[ACM_CTRL_IDX].id = 0;
 	if (gadget_is_dualspeed(c->cdev->gadget))
 		usb_free_descriptors(f->hs_descriptors);
 	if (gadget_is_superspeed(c->cdev->gadget))

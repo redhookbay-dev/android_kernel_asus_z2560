@@ -23,6 +23,7 @@
 #include <linux/init.h>
 #include <linux/smp.h>
 #include <linux/cpu.h>
+#include <linux/ratelimit.h>
 
 #include <asm/processor.h>
 #include <asm/apic.h>
@@ -30,8 +31,17 @@
 #include <asm/mce.h>
 #include <asm/msr.h>
 
-/* How long to wait between reporting thermal events */
-#define CHECK_INTERVAL		(300 * HZ)
+/*
+ * How long to wait between reporting thermal events ?
+ * If Interrupt is enabled for Coretemp driver, the BIOS
+ * takes care of hysteresis and thus there are no spurious
+ * interrupts expected. Hence making this interval to 0.
+ */
+#ifdef CONFIG_SENSORS_CORETEMP_INTERRUPT
+#define CHECK_INTERVAL		(0)
+#else
+#define CHECK_INTERVAL		(30 * HZ)
+#endif
 
 #define THERMAL_THROTTLING_EVENT	0
 #define POWER_LIMIT_EVENT		1
@@ -212,8 +222,10 @@ static int thresh_event_valid(int event)
 
 	state = (event == 0) ? &pstate->core_thresh0 : &pstate->core_thresh1;
 
-	if (time_before64(now, state->next_check))
+	if (time_before64(now, state->next_check)) {
+		pr_info_ratelimited("core threshold event rejected due to debounce\n");
 		return 0;
+	}
 
 	state->next_check = now + CHECK_INTERVAL;
 	return 1;

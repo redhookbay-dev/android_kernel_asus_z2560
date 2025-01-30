@@ -49,16 +49,23 @@ struct thermal_zone_device_ops {
 		     struct thermal_cooling_device *);
 	int (*unbind) (struct thermal_zone_device *,
 		       struct thermal_cooling_device *);
-	int (*get_temp) (struct thermal_zone_device *, unsigned long *);
+	int (*get_temp) (struct thermal_zone_device *, long *);
 	int (*get_mode) (struct thermal_zone_device *,
 			 enum thermal_device_mode *);
 	int (*set_mode) (struct thermal_zone_device *,
 		enum thermal_device_mode);
 	int (*get_trip_type) (struct thermal_zone_device *, int,
 		enum thermal_trip_type *);
-	int (*get_trip_temp) (struct thermal_zone_device *, int,
-			      unsigned long *);
-	int (*get_crit_temp) (struct thermal_zone_device *, unsigned long *);
+	int (*get_trip_temp) (struct thermal_zone_device *, int, long *);
+	int (*set_trip_temp) (struct thermal_zone_device *, int, long);
+	int (*get_trip_hyst) (struct thermal_zone_device *, int, long *);
+	int (*set_trip_hyst) (struct thermal_zone_device *, int, long);
+	int (*get_slope) (struct thermal_zone_device *, long *);
+	int (*set_slope) (struct thermal_zone_device *, long);
+	int (*get_intercept) (struct thermal_zone_device *, long *);
+	int (*set_intercept) (struct thermal_zone_device *, long);
+	int (*get_crit_temp) (struct thermal_zone_device *, long *);
+	int (*check_thermal) (struct thermal_zone_device *, long *);
 	int (*notify) (struct thermal_zone_device *, int,
 		       enum thermal_trip_type);
 };
@@ -67,6 +74,12 @@ struct thermal_cooling_device_ops {
 	int (*get_max_state) (struct thermal_cooling_device *, unsigned long *);
 	int (*get_cur_state) (struct thermal_cooling_device *, unsigned long *);
 	int (*set_cur_state) (struct thermal_cooling_device *, unsigned long);
+	int (*get_force_state_override) (struct thermal_cooling_device *,
+								char *);
+	int (*set_force_state_override) (struct thermal_cooling_device *,
+								char *);
+	int (*get_available_states) (struct thermal_cooling_device *,
+								char *);
 };
 
 #define THERMAL_TRIPS_NONE -1
@@ -76,6 +89,8 @@ struct thermal_cooling_device {
 	int id;
 	char type[THERMAL_NAME_LENGTH];
 	struct device device;
+	struct device_attribute trip_temp_attrs[THERMAL_MAX_TRIPS];
+	struct device_attribute trip_type_attrs[THERMAL_MAX_TRIPS];
 	void *devdata;
 	const struct thermal_cooling_device_ops *ops;
 	struct list_head node;
@@ -89,6 +104,9 @@ struct thermal_zone_device {
 	int id;
 	char type[THERMAL_NAME_LENGTH];
 	struct device device;
+	struct device_attribute trip_temp_attrs[THERMAL_MAX_TRIPS];
+	struct device_attribute trip_type_attrs[THERMAL_MAX_TRIPS];
+	struct device_attribute trip_hyst_attrs[THERMAL_MAX_TRIPS];
 	void *devdata;
 	int trips;
 	int tc1;
@@ -137,9 +155,9 @@ enum {
 };
 #define THERMAL_GENL_CMD_MAX (__THERMAL_GENL_CMD_MAX - 1)
 
-struct thermal_zone_device *thermal_zone_device_register(char *, int, void *,
-		const struct thermal_zone_device_ops *, int tc1, int tc2,
-		int passive_freq, int polling_freq);
+struct thermal_zone_device *thermal_zone_device_register(char *, int, int,
+		void *, const struct thermal_zone_device_ops *, int tc1,
+		int tc2, int passive_freq, int polling_freq);
 void thermal_zone_device_unregister(struct thermal_zone_device *);
 
 int thermal_zone_bind_cooling_device(struct thermal_zone_device *, int,

@@ -33,6 +33,7 @@
 #endif
 
 #include "usb.h"
+#include <linux/usb/xhci-ush-hsic-pci.h>
 
 
 /* PCI-based HCs are common, but plenty of non-PCI HCs are used too */
@@ -249,6 +250,11 @@ int usb_hcd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	}
 
 	pci_set_master(dev);
+#ifndef CONFIG_USB_HCD_HSIC
+#ifdef CONFIG_USB_HSIC_NOTIFY
+	hcd->hsic_notify = hsic_notify;
+#endif
+#endif
 
 	retval = usb_add_hcd(hcd, hcd_irq, IRQF_SHARED);
 	if (retval != 0)
@@ -571,7 +577,7 @@ static int hcd_pci_runtime_suspend(struct device *dev)
 
 static int hcd_pci_runtime_resume(struct device *dev)
 {
-	int	retval;
+	int			retval;
 
 	powermac_set_asic(to_pci_dev(dev), 1);
 	retval = resume_common(dev, PM_EVENT_AUTO_RESUME);

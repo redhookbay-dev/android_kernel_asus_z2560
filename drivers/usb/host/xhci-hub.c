@@ -548,9 +548,13 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 	struct xhci_bus_state *bus_state;
 	u16 link_state = 0;
 	u16 wake_mask = 0;
+	u32 __iomem *status_reg = NULL;
+	u32 i, command, num_ports, selector;
+
 
 	max_ports = xhci_get_ports(hcd, &port_array);
 	bus_state = &xhci->bus_state[hcd_index(hcd)];
+
 
 	spin_lock_irqsave(&xhci->lock, flags);
 	switch (typeReq) {
@@ -697,10 +701,13 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			link_state = (wIndex & 0xff00) >> 3;
 		if (wValue == USB_PORT_FEAT_REMOTE_WAKE_MASK)
 			wake_mask = wIndex & 0xff00;
+		selector = wIndex >> 8;
 		wIndex &= 0xff;
 		if (!wIndex || wIndex > max_ports)
 			goto error;
 		wIndex--;
+		status_reg = &xhci->op_regs->port_power_base +
+			NUM_PORT_REGS*wIndex;
 		temp = xhci_readl(xhci, port_array[wIndex]);
 		if (temp == 0xffffffff) {
 			retval = -ENODEV;
@@ -815,6 +822,16 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				bus_state->suspended_ports |= 1 << wIndex;
 			break;
 		case USB_PORT_FEAT_POWER:
+			/* FIXME Do not turn on BYT XHCI port 6 power,
+			 * Disable this port's power to disable HSIC hub
+			 */
+			 if ((xhci->quirks & XHCI_PORT_DISABLE_QUIRK) &&
+				(wIndex == 5)) {
+				temp = xhci_readl(xhci, port_array[wIndex]);
+				temp &= ~PORT_POWER;
+				xhci_writel(xhci, temp, port_array[wIndex]);
+				break;
+			}
 			/*
 			 * Turn on ports, even if there isn't per-port switching.
 			 * HC will report connect events even before this is set.
@@ -847,6 +864,77 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			xhci_writel(xhci, temp, port_array[wIndex]);
 
 			temp = xhci_readl(xhci, port_array[wIndex]);
+			break;
+		case USB_PORT_FEAT_TEST:
+			if (!selector || selector >= 5 || !status_reg)
+				goto error;
+			/*
+			 * Disable all Device Slots.
+			 */
+			for (i = 0; i < MAX_HC_SLOTS; i++) {
+				if (xhci->dcbaa->dev_context_ptrs[i]) {
+					if (xhci_queue_slot_control(xhci,
+						TRB_DISABLE_SLOT, i)) {
+						xhci_err(xhci,
+						"Disable slot[%d] failed!\n",
+						i);
+						goto error;
+					}
+				xhci_dbg(xhci, "Disable Slot[%d].\n", i);
+				}
+			}
+			/*
+			 *	All ports shall be in the Disable state (PP = 0)
+			 */
+			xhci_dbg(xhci, "Disable all port (PP = 0)\n");
+			num_ports = HCS_MAX_PORTS(xhci->hcs_params1);
+			for (i = 0; i < num_ports; i++) {
+				u32 __iomem *sreg =
+					&xhci->op_regs->port_status_base +
+						NUM_PORT_REGS*i;
+				temp = xhci_readl(xhci, sreg);
+				temp &= ~PORT_POWER;
+				xhci_writel(xhci, temp, sreg);
+			}
+
+			/*	Set the Run/Stop (R/S) bit in the USBCMD
+			 *	register to a '0' and wait for HCHalted(HCH) bit
+			 *	in the USBSTS register, to transition to a '1'.
+			 */
+			xhci_dbg(xhci, "Stop controller\n");
+			command = xhci_readl(xhci, &xhci->op_regs->command);
+			command &= ~CMD_RUN;
+			xhci_writel(xhci, command, &xhci->op_regs->command);
+			if (handshake(xhci, &xhci->op_regs->status,
+						STS_HALT, STS_HALT, 100*100)) {
+				xhci_warn(xhci, "WARN: xHC CMD_RUN timeout\n");
+				return -ETIMEDOUT;
+			}
+
+			/*
+			 * start to test
+			 */
+			xhci_dbg(xhci, "test case:");
+			switch (selector) {
+			case 1:
+				xhci_dbg(xhci, "TEST_J\n");
+				break;
+			case 2:
+				xhci_dbg(xhci, "TEST_K\n");
+				break;
+			case 3:
+				xhci_dbg(xhci, "TEST_SE0_NAK\n");
+				break;
+			case 4:
+				xhci_dbg(xhci, "TEST_PACKET\n");
+				break;
+			default:
+				xhci_dbg(xhci, "Invalide test case!\n");
+				goto error;
+			}
+			temp = xhci_readl(xhci, status_reg);
+			temp |= selector << 28;
+			xhci_writel(xhci, temp, status_reg);
 			break;
 		default:
 			goto error;
@@ -893,6 +981,20 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				goto error;
 			}
 			xhci_ring_device(xhci, slot_id);
+			break;
+		case USB_PORT_FEAT_POWER:
+			/*
+			 * Turn off ports even if there isn't per-port
+			 * swithing. HC will report connect events even
+			 * before this is set. However, khubd will ignore
+			 * the roothub events until the roothub is registered.
+			 */
+			xhci_writel(xhci, temp & ~PORT_POWER,
+					port_array[wIndex]);
+
+			temp = xhci_readl(xhci, port_array[wIndex]);
+			xhci_dbg(xhci, "clear PP, port %d status  = 0x%x\n",
+					wIndex, temp);
 			break;
 		case USB_PORT_FEAT_C_SUSPEND:
 			bus_state->port_c_suspend &= ~(1 << wIndex);

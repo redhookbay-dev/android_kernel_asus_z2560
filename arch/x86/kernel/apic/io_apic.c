@@ -60,6 +60,7 @@
 #include <asm/irq_remapping.h>
 #include <asm/hpet.h>
 #include <asm/hw_irq.h>
+#include <asm/intel-mid.h>
 
 #include <asm/apic.h>
 
@@ -348,6 +349,24 @@ static inline void io_apic_eoi(unsigned int apic, unsigned int vector)
 	struct io_apic __iomem *io_apic = io_apic_base(apic);
 	writel(vector, &io_apic->eoi);
 }
+
+/*
+ * This index matches with 1024 - 4 address in SCU RTE table area.
+ * That is not used for anything. Works in CLVP only
+ */
+#define LAST_INDEX_IN_IO_APIC_SPACE 255
+#define KERNEL_TO_SCU_PANIC_REQUEST (0x0515dead)
+void apic_scu_panic_dump(void)
+{
+	unsigned long flags;
+
+	printk(KERN_ERR "Request SCU panic dump");
+	raw_spin_lock_irqsave(&ioapic_lock, flags);
+	io_apic_write(0, LAST_INDEX_IN_IO_APIC_SPACE,
+		      KERNEL_TO_SCU_PANIC_REQUEST);
+	raw_spin_unlock_irqrestore(&ioapic_lock, flags);
+}
+EXPORT_SYMBOL_GPL(apic_scu_panic_dump);
 
 static unsigned int __io_apic_read(unsigned int apic, unsigned int reg)
 {
@@ -2542,6 +2561,13 @@ void irq_force_complete_move(int irq)
 static inline void irq_complete_move(struct irq_cfg *cfg) { }
 #endif
 
+#ifdef CONFIG_ATOM_SOC_POWER
+static int ioapic_set_wake(struct irq_data *data, unsigned int on)
+{
+	return 0;
+}
+#endif
+
 static void ack_apic_edge(struct irq_data *data)
 {
 	irq_complete_move(data->chip_data);
@@ -2713,6 +2739,9 @@ static struct irq_chip ioapic_chip __read_mostly = {
 	.irq_eoi		= ack_apic_level,
 #ifdef CONFIG_SMP
 	.irq_set_affinity	= ioapic_set_affinity,
+#endif
+#ifdef CONFIG_ATOM_SOC_POWER
+	.irq_set_wake	= ioapic_set_wake,
 #endif
 	.irq_retrigger		= ioapic_retrigger_irq,
 };
@@ -3054,7 +3083,9 @@ void __init setup_IO_APIC(void)
 	sync_Arb_IDs();
 	setup_IO_APIC_irqs();
 	init_IO_APIC_traps();
-	if (legacy_pic->nr_legacy_irqs)
+	/* Skip the timer check for Valleyview2 */
+	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2 &&
+		legacy_pic->nr_legacy_irqs)
 		check_timer();
 }
 
@@ -3717,6 +3748,7 @@ int io_apic_set_pci_routing(struct device *dev, int irq,
 
 	return io_apic_setup_irq_pin_once(irq, node, irq_attr);
 }
+EXPORT_SYMBOL(io_apic_set_pci_routing);
 
 #ifdef CONFIG_X86_32
 static int __init io_apic_get_unique_id(int ioapic, int apic_id)
@@ -4014,6 +4046,7 @@ int mp_find_ioapic(u32 gsi)
 	printk(KERN_ERR "ERROR: Unable to locate IOAPIC for GSI %d\n", gsi);
 	return -1;
 }
+EXPORT_SYMBOL(mp_find_ioapic);
 
 int mp_find_ioapic_pin(int ioapic, u32 gsi)
 {

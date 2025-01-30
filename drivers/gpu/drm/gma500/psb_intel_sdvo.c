@@ -901,7 +901,7 @@ static bool psb_intel_sdvo_set_tv_format(struct psb_intel_sdvo *psb_intel_sdvo)
 
 static bool
 psb_intel_sdvo_set_output_timings_from_mode(struct psb_intel_sdvo *psb_intel_sdvo,
-					struct drm_display_mode *mode)
+					const struct drm_display_mode *mode)
 {
 	struct psb_intel_sdvo_dtd output_dtd;
 
@@ -918,7 +918,7 @@ psb_intel_sdvo_set_output_timings_from_mode(struct psb_intel_sdvo *psb_intel_sdv
 
 static bool
 psb_intel_sdvo_set_input_timings_for_mode(struct psb_intel_sdvo *psb_intel_sdvo,
-					struct drm_display_mode *mode,
+					const struct drm_display_mode *mode,
 					struct drm_display_mode *adjusted_mode)
 {
 	/* Reset the input timing to the screen. Assume always input 0. */
@@ -942,7 +942,7 @@ psb_intel_sdvo_set_input_timings_for_mode(struct psb_intel_sdvo *psb_intel_sdvo,
 }
 
 static bool psb_intel_sdvo_mode_fixup(struct drm_encoder *encoder,
-				  struct drm_display_mode *mode,
+				  const struct drm_display_mode *mode,
 				  struct drm_display_mode *adjusted_mode)
 {
 	struct psb_intel_sdvo *psb_intel_sdvo = to_psb_intel_sdvo(encoder);
@@ -1141,7 +1141,6 @@ static void psb_intel_sdvo_dpms(struct drm_encoder *encoder, int mode)
 static int psb_intel_sdvo_mode_valid(struct drm_connector *connector,
 				 struct drm_display_mode *mode)
 {
-	struct drm_psb_private *dev_priv = connector->dev->dev_private;
 	struct psb_intel_sdvo *psb_intel_sdvo = intel_attached_sdvo(connector);
 
 	if (mode->flags & DRM_MODE_FLAG_DBLSCAN)
@@ -1160,11 +1159,6 @@ static int psb_intel_sdvo_mode_valid(struct drm_connector *connector,
 		if (mode->vdisplay > psb_intel_sdvo->sdvo_lvds_fixed_mode->vdisplay)
 			return MODE_PANEL;
 	}
-
-	/* We assume worst case scenario of 32 bpp here, since we don't know */
-	if ((ALIGN(mode->hdisplay * 4, 64) * mode->vdisplay) >
-	    dev_priv->vram_stolen_size)
-		return MODE_MEM;
 
 	return MODE_OK;
 }
@@ -1472,61 +1466,61 @@ static void psb_intel_sdvo_get_ddc_modes(struct drm_connector *connector)
 static const struct drm_display_mode sdvo_tv_modes[] = {
 	{ DRM_MODE("320x200", DRM_MODE_TYPE_DRIVER, 5815, 320, 321, 384,
 		   416, 0, 200, 201, 232, 233, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("320x240", DRM_MODE_TYPE_DRIVER, 6814, 320, 321, 384,
 		   416, 0, 240, 241, 272, 273, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("400x300", DRM_MODE_TYPE_DRIVER, 9910, 400, 401, 464,
 		   496, 0, 300, 301, 332, 333, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("640x350", DRM_MODE_TYPE_DRIVER, 16913, 640, 641, 704,
 		   736, 0, 350, 351, 382, 383, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("640x400", DRM_MODE_TYPE_DRIVER, 19121, 640, 641, 704,
 		   736, 0, 400, 401, 432, 433, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("640x480", DRM_MODE_TYPE_DRIVER, 22654, 640, 641, 704,
 		   736, 0, 480, 481, 512, 513, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("704x480", DRM_MODE_TYPE_DRIVER, 24624, 704, 705, 768,
 		   800, 0, 480, 481, 512, 513, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("704x576", DRM_MODE_TYPE_DRIVER, 29232, 704, 705, 768,
 		   800, 0, 576, 577, 608, 609, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("720x350", DRM_MODE_TYPE_DRIVER, 18751, 720, 721, 784,
 		   816, 0, 350, 351, 382, 383, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("720x400", DRM_MODE_TYPE_DRIVER, 21199, 720, 721, 784,
 		   816, 0, 400, 401, 432, 433, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER, 25116, 720, 721, 784,
 		   816, 0, 480, 481, 512, 513, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("720x540", DRM_MODE_TYPE_DRIVER, 28054, 720, 721, 784,
 		   816, 0, 540, 541, 572, 573, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER, 29816, 720, 721, 784,
 		   816, 0, 576, 577, 608, 609, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("768x576", DRM_MODE_TYPE_DRIVER, 31570, 768, 769, 832,
 		   864, 0, 576, 577, 608, 609, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("800x600", DRM_MODE_TYPE_DRIVER, 34030, 800, 801, 864,
 		   896, 0, 600, 601, 632, 633, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("832x624", DRM_MODE_TYPE_DRIVER, 36581, 832, 833, 896,
 		   928, 0, 624, 625, 656, 657, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("920x766", DRM_MODE_TYPE_DRIVER, 48707, 920, 921, 984,
 		   1016, 0, 766, 767, 798, 799, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 53827, 1024, 1025, 1088,
 		   1120, 0, 768, 769, 800, 801, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 	{ DRM_MODE("1280x1024", DRM_MODE_TYPE_DRIVER, 87265, 1280, 1281, 1344,
 		   1376, 0, 1024, 1025, 1056, 1057, 0,
-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC, 0) },
 };
 
 static void psb_intel_sdvo_get_tv_modes(struct drm_connector *connector)
@@ -2044,8 +2038,7 @@ psb_intel_sdvo_add_hdmi_properties(struct psb_intel_sdvo_connector *connector)
 	struct drm_device *dev = connector->base.base.dev;
 
 	intel_attach_force_audio_property(&connector->base.base);
-	if (INTEL_INFO(dev)->gen >= 4 && IS_MOBILE(dev))
-		intel_attach_broadcast_rgb_property(&connector->base.base);
+	intel_attach_broadcast_rgb_property(&connector->base.base);
 	*/
 }
 

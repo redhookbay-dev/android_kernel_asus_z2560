@@ -462,10 +462,28 @@ static void __init mm_init(void)
 	vmalloc_init();
 }
 
+//Joe add for detect OS entry mode ++
+unsigned int entry_mode;
+EXPORT_SYMBOL(entry_mode);
+//entry_mode = 1; MOS
+//entry_mode = 2; recovery
+//entry_mode = 3; POS
+//entry_mode = 4; COS
+//entry_mode = 5; MiniOS
+//Joe add for detect OS entry mode --
+
 asmlinkage void __init start_kernel(void)
 {
 	char * command_line;
 	extern const struct kernel_param __start___param[], __stop___param[];
+
+//Joe add for detect OS entry mode ++
+	char *loc_main;
+	char *loc_fato;
+	char *loc_fastboot;
+	char *loc_charger;
+	char *loc_minios;
+//Joe add for detect OS entry mode --
 
 	/*
 	 * Need to run as early as possible, to initialize the
@@ -505,6 +523,42 @@ asmlinkage void __init start_kernel(void)
 	page_alloc_init();
 
 	printk(KERN_NOTICE "Kernel command line: %s\n", boot_command_line);
+
+//Joe add for detect OS entry mode ++
+	entry_mode = 1;
+	loc_main = strstr(boot_command_line,"androidboot.mode=main");
+	if(loc_main != NULL)
+	{
+		entry_mode = 1;
+		printk(KERN_NOTICE "string match androidboot.mode=main.\n");
+	}
+	loc_fato = strstr(boot_command_line,"androidboot.mode=fota");
+	if(loc_fato != NULL)
+	{
+		entry_mode = 2;
+		printk(KERN_NOTICE "string match androidboot.mode=fota.\n");
+	}
+	loc_fastboot = strstr(boot_command_line,"androidboot.mode=fastboot");
+	if(loc_fastboot != NULL)
+	{
+		entry_mode = 3;
+		printk(KERN_NOTICE "string match androidboot.mode=fastboot\n");
+	}
+	loc_charger = strstr(boot_command_line,"androidboot.mode=charger");
+	if(loc_charger != NULL)
+	{
+		entry_mode = 4;
+		printk(KERN_NOTICE "string match androidboot.mode=charger\n");
+	}
+	loc_minios = strstr(boot_command_line,"androidboot.mode=factory");
+	if(loc_minios != NULL)
+	{
+		entry_mode = 5;
+		printk(KERN_NOTICE "string match androidboot.mode=factory\n");
+	}
+	printk(KERN_NOTICE "OS Entry_mode = %d\n",entry_mode);
+//Joe add for detect OS entry mode --
+
 	parse_early_param();
 	parse_args("Booting kernel", static_command_line, __start___param,
 		   __stop___param - __start___param,

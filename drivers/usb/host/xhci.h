@@ -27,6 +27,8 @@
 #include <linux/timer.h>
 #include <linux/kernel.h>
 #include <linux/usb/hcd.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm.h>
 
 /* Code sharing between pci-quirks and xhci hcd */
 #include	"xhci-ext-caps.h"
@@ -1508,6 +1510,8 @@ struct xhci_hcd {
 #define XHCI_SPURIOUS_REBOOT	(1 << 13)
 #define XHCI_COMP_MODE_QUIRK	(1 << 14)
 #define XHCI_AVOID_BEI		(1 << 15)
+#define XHCI_PORT_DISABLE_QUIRK	(1 << 16)
+#define XHCI_LPM_DISABLE_QUIRK	(1 << 17)
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
 	/* There are two roothubs to keep track of bus suspend info for */
@@ -1529,6 +1533,9 @@ struct xhci_hcd {
 	u32			port_status_u0;
 /* Compliance Mode Timer Triggered every 2 seconds */
 #define COMP_MODE_RCVRY_MSECS 2000
+	struct work_struct	pm_check;
+	int			pm_check_flag;
+	void __iomem		*pmc_base_addr;
 };
 
 /* convert between an HCD pointer and the corresponding EHCI_HCD */
@@ -1694,11 +1701,18 @@ void xhci_free_command(struct xhci_hcd *xhci,
 
 #ifdef CONFIG_PCI
 /* xHCI PCI glue */
+#ifdef CONFIG_USB_USH_HSIC
+int xhci_register_ush_pci(void);
+void xhci_unregister_ush_pci(void);
+#else
 int xhci_register_pci(void);
 void xhci_unregister_pci(void);
+#endif
 #else
 static inline int xhci_register_pci(void) { return 0; }
 static inline void xhci_unregister_pci(void) {}
+static inline int xhci_register_ush_pci(void) { return 0; }
+static inline void xhci_unregister_ush_pci(void) {}
 #endif
 
 #if defined(CONFIG_USB_XHCI_PLATFORM) \
@@ -1736,6 +1750,7 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated);
 int xhci_get_frame(struct usb_hcd *hcd);
 irqreturn_t xhci_irq(struct usb_hcd *hcd);
 irqreturn_t xhci_msi_irq(int irq, struct usb_hcd *hcd);
+irqreturn_t xhci_byt_pm_irq(int irq, struct usb_hcd *hcd);
 int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev);
 void xhci_free_dev(struct usb_hcd *hcd, struct usb_device *udev);
 int xhci_alloc_tt_info(struct xhci_hcd *xhci,

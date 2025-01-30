@@ -113,6 +113,9 @@
 #include <asm/mce.h>
 #include <asm/alternative.h>
 #include <asm/prom.h>
+#ifdef CONFIG_INTEL_MID_RAM_CONSOLE
+#include <asm/intel-mid.h>
+#endif
 
 /*
  * end_pfn only includes RAM, while max_pfn_mapped includes all e820 entries.
@@ -486,6 +489,25 @@ static void __init e820_reserve_setup_data(void)
 	e820_print_map("reserve setup_data");
 }
 
+#ifdef CONFIG_CRASH_DUMP
+static void __init e820_crashdump_remove_ram(void)
+{
+	/*
+	* We are doing a crash dump, so remove all RAM ranges
+	* as they are the ones that need to be dumped.
+	* We still need all non-RAM information in order to do I/O.
+	*/
+	/* NOTE: if you use old kexec, please remove memmap=exactmap
+	* which remove all ranges, not only RAM ranges.
+	*/
+	saved_max_pfn = e820_end_of_ram_pfn();
+	e820_remove_range(0, ULLONG_MAX, E820_RAM, 1);
+	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
+	e820_print_map("crash_dump");
+}
+#endif
+
+
 static void __init memblock_x86_reserve_range_setup_data(void)
 {
 	struct setup_data *data;
@@ -836,6 +858,9 @@ void __init setup_arch(char **cmdline_p)
 	parse_setup_data();
 	/* update the e820_saved too */
 	e820_reserve_setup_data();
+#ifdef CONFIG_CRASH_DUMP
+	e820_crashdump_remove_ram();
+#endif
 
 	copy_edd();
 
@@ -998,6 +1023,10 @@ void __init setup_arch(char **cmdline_p)
 	setup_trampolines();
 
 	trim_platform_memory_ranges();
+
+#ifdef CONFIG_INTEL_MID_RAM_CONSOLE
+	ram_console_reserve_memory();
+#endif
 
 	init_gbpages();
 

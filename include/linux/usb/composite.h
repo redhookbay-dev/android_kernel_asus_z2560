@@ -242,6 +242,9 @@ int usb_add_config(struct usb_composite_dev *,
 		struct usb_configuration *,
 		int (*)(struct usb_configuration *));
 
+int usb_remove_config(struct usb_composite_dev *,
+		struct usb_configuration *);
+
 /**
  * struct usb_composite_driver - groups configurations into a gadget
  * @name: For diagnostics, identifies the driver.
@@ -346,6 +349,7 @@ struct usb_composite_dev {
 	struct list_head		configs;
 	struct usb_composite_driver	*driver;
 	u8				next_string_id;
+	u8				reset_string_id;
 	u8				manufacturer_override;
 	u8				product_override;
 	u8				serial_override;
@@ -362,6 +366,9 @@ struct usb_composite_dev {
 
 	/* protects deactivations and delayed_status counts*/
 	spinlock_t			lock;
+
+	/* OTG support */
+	struct usb_otg_descriptor	*otg_desc;
 };
 
 extern int usb_string_id(struct usb_composite_dev *c);

@@ -165,7 +165,25 @@ config INPUT_APMPOWER
 	  To compile this driver as a module, choose M here: the
 	  module will be called apm-power.
 
+config INPUT_KEYRESET
+	tristate "Reset key"
+	depends on INPUT
+	---help---
+	  Say Y here if you want to reboot when some keys are pressed;
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called keyreset.
+
+config INPUT_ASUSEC
+        bool "ASUS embedded controller interface"
+        depends on I2C
+
 comment "Input Device Drivers"
+
+# Joe add for asus pad ec driver ++
+source "drivers/input/asusec/Kconfig"
+# Joe add for asus pad ec driver --
+
 
 source "drivers/input/keyboard/Kconfig"
 
@@ -178,6 +196,8 @@ source "drivers/input/tablet/Kconfig"
 source "drivers/input/touchscreen/Kconfig"
 
 source "drivers/input/misc/Kconfig"
+
+source "drivers/input/sensors/Kconfig"
 
 endif
 

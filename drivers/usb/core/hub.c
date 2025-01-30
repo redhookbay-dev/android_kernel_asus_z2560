@@ -31,12 +31,20 @@
 
 #include "usb.h"
 
+#ifdef CONFIG_USB_HCD_HSIC
+#include <linux/usb/ehci-tangier-hsic-pci.h>
+#endif
+
 /* if we are in debug mode, always announce new devices */
 #ifdef DEBUG
 #ifndef CONFIG_USB_ANNOUNCE_NEW_DEVICES
 #define CONFIG_USB_ANNOUNCE_NEW_DEVICES
 #endif
 #endif
+
+struct port_wakeup {
+	struct mutex		wakeup_mutex;
+};
 
 struct usb_hub {
 	struct device		*intfdev;	/* the "interface" device */
@@ -83,6 +91,7 @@ struct usb_hub {
 	struct delayed_work	leds;
 	struct delayed_work	init_work;
 	void			**port_owners;
+	struct port_wakeup	**port_wakeup;
 };
 
 static inline int hub_is_superspeed(struct usb_device *hdev)
@@ -1070,7 +1079,7 @@ static int hub_configure(struct usb_hub *hub,
 	u16 hubstatus, hubchange;
 	u16 wHubCharacteristics;
 	unsigned int pipe;
-	int maxp, ret;
+	int maxp, ret, i;
 	char *message = "out of memory";
 
 	hub->buffer = kmalloc(sizeof(*hub->buffer), GFP_KERNEL);
@@ -1109,6 +1118,23 @@ static int hub_configure(struct usb_hub *hub,
 	hdev->maxchild = hub->descriptor->bNbrPorts;
 	dev_info (hub_dev, "%d port%s detected\n", hdev->maxchild,
 		(hdev->maxchild == 1) ? "" : "s");
+
+	hub->port_wakeup = kmalloc(hdev->maxchild *
+				sizeof(struct port_wakeup *), GFP_KERNEL);
+	if (!hub->port_wakeup) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	for (i = 0; i < hdev->maxchild; i++) {
+		hub->port_wakeup[i] = kmalloc(sizeof(struct port_wakeup),
+				GFP_KERNEL);
+		if (!hub->port_wakeup[i]) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+		mutex_init(&hub->port_wakeup[i]->wakeup_mutex);
+	}
 
 	hdev->children = kzalloc(hdev->maxchild *
 				sizeof(struct usb_device *), GFP_KERNEL);
@@ -1346,6 +1372,7 @@ static void hub_disconnect(struct usb_interface *intf)
 {
 	struct usb_hub *hub = usb_get_intfdata(intf);
 	struct usb_device *hdev = interface_to_usbdev(intf);
+	int i;
 
 	/* Take the hub off the event list and don't let it be added again */
 	spin_lock_irq(&hub_event_lock);
@@ -1361,6 +1388,11 @@ static void hub_disconnect(struct usb_interface *intf)
 	hub_quiesce(hub, HUB_DISCONNECT);
 
 	usb_set_intfdata (intf, NULL);
+
+	/* Free port_wakeup array */
+	for (i = 0; i < hdev->maxchild; i++)
+		kfree(hub->port_wakeup[i]);
+
 	hub->hdev->maxchild = 0;
 
 	if (hub->hdev->speed == USB_SPEED_HIGH)
@@ -1369,6 +1401,7 @@ static void hub_disconnect(struct usb_interface *intf)
 	usb_free_urb(hub->urb);
 	kfree(hdev->children);
 	kfree(hub->port_owners);
+	kfree(hub->port_wakeup);
 	kfree(hub->descriptor);
 	kfree(hub->status);
 	kfree(hub->buffer);
@@ -1392,6 +1425,7 @@ static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	if (hdev->level == MAX_TOPO_LEVEL) {
 		dev_err(&intf->dev,
 			"Unsupported bus topology: hub nested too deep\n");
+		usb_notify_warning(hdev, USB_WARNING_HUB_MAX_TIER);
 		return -E2BIG;
 	}
 
@@ -1710,6 +1744,42 @@ static void hub_free_dev(struct usb_device *udev)
 		hcd->driver->free_dev(hcd, udev);
 }
 
+#ifdef CONFIG_USB_OTG
+
+static void otg_notify(struct usb_device *udev, unsigned action)
+{
+	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
+
+	if (hcd->otg_notify)
+		hcd->otg_notify(udev, action);
+}
+
+#else
+
+static inline void otg_notify(struct usb_device *udev, unsigned action)
+{
+}
+
+#endif
+
+#ifdef CONFIG_USB_HSIC_NOTIFY
+
+static void hsic_notify(struct usb_device *udev, unsigned action)
+{
+	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
+
+	if (hcd->hsic_notify)
+		hcd->hsic_notify(udev, action);
+}
+
+#else
+
+static inline void hsic_notify(struct usb_device *udev, unsigned action)
+{
+}
+
+#endif
+
 /**
  * usb_disconnect - disconnect a device (usbcore-internal)
  * @pdev: pointer to device being disconnected
@@ -1763,7 +1833,8 @@ void usb_disconnect(struct usb_device **pdev)
 	 * notifier chain (used by usbfs and possibly others).
 	 */
 	device_del(&udev->dev);
-
+	otg_notify(udev, USB_DEVICE_REMOVE);
+	hsic_notify(udev, USB_DEVICE_REMOVE);
 	/* Free the device number and delete the parent's children[]
 	 * (or root_hub) pointer.
 	 */
@@ -1844,23 +1915,26 @@ static int usb_enumerate_device_otg(struct usb_device *udev)
 						? "" : "non-");
 
 				/* enable HNP before suspend, it's simpler */
-				if (port1 == bus->otg_port)
+				if (port1 == bus->otg_port) {
 					bus->b_hnp_enable = 1;
-				err = usb_control_msg(udev,
-					usb_sndctrlpipe(udev, 0),
-					USB_REQ_SET_FEATURE, 0,
-					bus->b_hnp_enable
-						? USB_DEVICE_B_HNP_ENABLE
-						: USB_DEVICE_A_ALT_HNP_SUPPORT,
-					0, NULL, 0, USB_CTRL_SET_TIMEOUT);
-				if (err < 0) {
-					/* OTG MESSAGE: report errors here,
-					 * customize to match your product.
-					 */
-					dev_info(&udev->dev,
+					/* don't use A_ALT_HNP_SUPPORT as it is
+					 * obsoleted in OTG2.0 Spec */
+					err = usb_control_msg(udev,
+						usb_sndctrlpipe(udev, 0),
+						USB_REQ_SET_FEATURE, 0,
+						USB_DEVICE_B_HNP_ENABLE,
+						0, NULL, 0,
+						USB_CTRL_SET_TIMEOUT);
+					if (err < 0) {
+						/* OTG MESSAGE: report errors
+						 * here, customize to match
+						 * your product. */
+						dev_info(&udev->dev,
 						"can't set HNP mode: %d\n",
-						err);
-					bus->b_hnp_enable = 0;
+							err);
+						bus->b_hnp_enable = 0;
+					}
+
 				}
 			}
 		}
@@ -2037,6 +2111,8 @@ int usb_new_device(struct usb_device *udev)
 	 * notifier chain (used by usbfs and possibly others).
 	 */
 	err = device_add(&udev->dev);
+	otg_notify(udev, USB_DEVICE_ADD);
+	hsic_notify(udev, USB_DEVICE_ADD);
 	if (err) {
 		dev_err(&udev->dev, "can't device_add, error %d\n", err);
 		goto fail;
@@ -2385,6 +2461,7 @@ done:
 	return status;
 }
 
+
 /* Check if a port is power on */
 static int port_is_power_on(struct usb_hub *hub, unsigned portstatus)
 {
@@ -2530,9 +2607,15 @@ static int usb_disable_function_remotewakeup(struct usb_device *udev)
  */
 int usb_port_suspend(struct usb_device *udev, pm_message_t msg)
 {
-	struct usb_hub	*hub = hdev_to_hub(udev->parent);
-	int		port1 = udev->portnum;
-	int		status;
+	struct usb_hub		*hub = hdev_to_hub(udev->parent);
+	int			port1 = udev->portnum;
+	struct port_wakeup	*pwakeup = NULL;
+	int			status;
+
+	if (!hub) {
+		dev_err(&udev->dev, "hub data struct is NULL\n");
+		return -ENODEV;
+	}
 
 	/* enable remote wakeup when appropriate; this lets the device
 	 * wake up the upstream hub (including maybe the root hub).
@@ -2575,6 +2658,13 @@ int usb_port_suspend(struct usb_device *udev, pm_message_t msg)
 	if (udev->usb2_hw_lpm_enabled == 1)
 		usb_set_usb2_hardware_lpm(udev, 0);
 
+	/* Hold port wakeup mutex before set PORT_SUSPEND
+	 * if device may generate remote wakeup
+	 */
+	pwakeup = hub->port_wakeup[port1-1];
+	if (udev->do_remote_wakeup && pwakeup)
+			mutex_lock(&pwakeup->wakeup_mutex);
+
 	/* see 7.1.7.6 */
 	if (hub_is_superspeed(hub->hdev))
 		status = set_port_feature(hub->hdev,
@@ -2588,6 +2678,9 @@ int usb_port_suspend(struct usb_device *udev, pm_message_t msg)
 				port1, status);
 		/* paranoia:  "should not happen" */
 		if (udev->do_remote_wakeup) {
+			if (pwakeup)
+				mutex_unlock(&pwakeup->wakeup_mutex);
+
 			if (!hub_is_superspeed(hub->hdev)) {
 				(void) usb_control_msg(udev,
 						usb_sndctrlpipe(udev, 0),
@@ -2614,6 +2707,9 @@ int usb_port_suspend(struct usb_device *udev, pm_message_t msg)
 				(PMSG_IS_AUTO(msg) ? "auto-" : ""),
 				udev->do_remote_wakeup);
 		usb_set_device_state(udev, USB_STATE_SUSPENDED);
+		/* release port wakeup mutex after handle port_suspend */
+		if (udev->do_remote_wakeup && pwakeup)
+			mutex_unlock(&pwakeup->wakeup_mutex);
 		msleep(10);
 	}
 	usb_mark_last_busy(hub->hdev);
@@ -2664,7 +2760,8 @@ static int finish_port_resume(struct usb_device *udev)
 	 */
 	if (status == 0) {
 		devstatus = 0;
-		status = usb_get_status(udev, USB_RECIP_DEVICE, 0, &devstatus);
+		status = usb_get_status(udev,
+			 USB_RECIP_DEVICE, 0, &devstatus);
 		if (status >= 0)
 			status = (status > 0 ? 0 : -ENODEV);
 
@@ -3436,6 +3533,14 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 		"port %d, status %04x, change %04x, %s\n",
 		port1, portstatus, portchange, portspeed(hub, portstatus));
 
+#ifdef CONFIG_USB_SUSPEND
+	/* add 5s time-out wakelock for delay system suspend */
+	wake_lock_timeout(&hcd->wake_lock, 5 * HZ);
+	dev_dbg(hub_dev,
+		"%s add 5s wake_lock for port connect change\n",
+		__func__);
+#endif
+
 	if (hub->has_indicators) {
 		set_port_led(hub, port1, HUB_LED_AUTO);
 		hub->indicator[port1-1] = INDICATOR_AUTO;
@@ -3478,6 +3583,9 @@ static void hub_port_connect_change(struct usb_hub *hub, int port1,
 
 	/* Disconnect any existing devices under this port */
 	if (udev)
+		hsic_notify(hdev->children[port1-1], MODEM_WORK_FLUSH);
+
+	if (hdev->children[port1-1])
 		usb_disconnect(&hdev->children[port1-1]);
 	clear_bit(port1, hub->change_bits);
 
@@ -3678,7 +3786,11 @@ static int hub_handle_remote_wakeup(struct usb_hub *hub, unsigned int port,
 		msleep(10);
 
 		usb_lock_device(udev);
+		if (hub->port_wakeup[port-1])
+			mutex_lock(&hub->port_wakeup[port-1]->wakeup_mutex);
 		ret = usb_remote_wakeup(udev);
+		if (hub->port_wakeup[port-1])
+			mutex_unlock(&hub->port_wakeup[port-1]->wakeup_mutex);
 		usb_unlock_device(udev);
 		if (ret < 0)
 			connect_change = 1;

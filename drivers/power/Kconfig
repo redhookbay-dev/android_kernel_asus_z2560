@@ -8,6 +8,36 @@ menuconfig POWER_SUPPLY
 
 if POWER_SUPPLY
 
+config POWER_SUPPLY_CHARGER
+	bool "Power Supply Charger"
+	select EXTCON
+	select POWER_SUPPLY_BATTID
+	help
+	  Say Y here to enable the power supply charger framework. Charger
+	  framework supports charging in a generic way. This allows the charger
+	  drivers to keep the charging logic outside and the charger driver
+	  just need to abstract the charger hardware
+
+config POWER_SUPPLY_CHARGING_ALGO_PSE
+	bool "PSE compliant charging algorithm"
+	help
+	  Say Y here to select PSE compliant charging algorithm. As per PSE
+	  standard the battery characteristics and thereby the charging rates
+	  can vary on different temperature zones. This config will enable PSE
+	  compliant charging algorithm with maintenance charging support. The
+	  algorithm can be selected by the charging framework based on the type
+	  of the battery charging profile.
+
+	depends on POWER_SUPPLY_CHARGER
+
+config POWER_SUPPLY_BATTID
+	bool "Power Supply Battery Identification Framework"
+	help
+	 Say Y here to enable the power supply battery idnetification
+	 framework. The framework would allow different battery identification
+	 drivers to interface with power supply subsystem. Also it allows consumer
+	 drivers to register for notification from the power_supply subsystem.
+
 config POWER_SUPPLY_DEBUG
 	bool "Power supply debug"
 	help
@@ -190,6 +220,16 @@ config BATTERY_MAX17042
 	  multi-function devices that include fuel gauages that are compatible
 	  with MAX17042.
 
+config BATTERY_ANDROID
+	tristate "Battery driver for Android"
+	help
+	  Say Y to enable generic support for battery charging according
+	  to common Android policies.
+	  This driver adds periodic battery level and health monitoring,
+	  kernel log reporting and other debugging features, common board
+	  battery file glue logic for battery/case temperature sensors,
+	  etc.
+
 config BATTERY_Z2
 	tristate "Z2 battery driver"
 	depends on I2C && MACH_ZIPIT2
@@ -225,6 +265,13 @@ config BATTERY_INTEL_MID
 	help
 	  Say Y here to enable the battery driver on Intel MID
 	  platforms.
+
+config BATTERY_INTEL_MDF
+        tristate "Battery driver for Intel Medfield MID platforms"
+        depends on INTEL_SCU_IPC && USB_PENWELL_OTG && MSIC_GPADC
+        help
+          Say Y here to enable the battery driver on Intel Medfield based MID
+          platforms.
 
 config CHARGER_ISP1704
 	tristate "ISP1704 USB Charger Detection"
@@ -295,6 +342,16 @@ config CHARGER_SMB347
 	  Say Y to include support for Summit Microelectronics SMB347
 	  Battery Charger.
 
+config BYT_FFRD8_CHARGER
+	tristate "BYT charger initialization module"
+	depends on I2C
+	help
+	  This module initializes the BYT FFRD8 platform data. This
+	  module will initialize the I2C addresses for charger and FG.
+
+	  Say Y here if you have baytrail ffrd8 platform and to support
+	  BYT FFRD8 Battery Charger.
+
 config AB8500_BM
 	bool "AB8500 Battery Management Driver"
 	depends on AB8500_CORE && AB8500_GPADC
@@ -307,4 +364,26 @@ config AB8500_BATTERY_THERM_ON_BATCTRL
 	help
 	  Say Y to enable battery temperature measurements using
 	  thermistor connected on BATCTRL ADC.
+
+config BYT_ULPMC_BATTERY
+	bool "Baytrail ULPMC battery driver"
+	depends on I2C
+	help
+	  Say Y here to enable support for Baytrail ULPMC battery driver.
+
+config BYT_ULPMC_FWUPDATE
+	bool "Baytrail ULPMC firmware update driver"
+	depends on BYT_ULPMC_BATTERY
+	help
+	  Say Y here to enable support for Baytrail ULPMC firmware update driver
+
+config BYT_EC_BATTERY
+	bool "Baytrail EC battery driver"
+	help
+	  Say Y here to enable support for Baytrail EC battery driver.
+
+# chris ((( battery driver
+source "drivers/power/battery/Kconfig"
+# )))
+source "drivers/power/TX201LA_BATTERY/Kconfig"
 endif # POWER_SUPPLY

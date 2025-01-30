@@ -138,15 +138,26 @@ struct cdc_ncm_ctx {
 static void cdc_ncm_txpath_bh(unsigned long param);
 static void cdc_ncm_tx_timeout_start(struct cdc_ncm_ctx *ctx);
 static enum hrtimer_restart cdc_ncm_tx_timer_cb(struct hrtimer *hr_timer);
-static const struct driver_info cdc_ncm_info;
+static const struct driver_info cdc_ncm_info, cdc_ncm_info_alt;
 static struct usb_driver cdc_ncm_driver;
 static const struct ethtool_ops cdc_ncm_ethtool_ops;
 
+
 static const struct usb_device_id cdc_devs[] = {
-	{ USB_INTERFACE_INFO(USB_CLASS_COMM,
-		USB_CDC_SUBCLASS_NCM, USB_CDC_PROTO_NONE),
-		.driver_info = (unsigned long)&cdc_ncm_info,
-	},
+		{ .match_flags = USB_DEVICE_ID_MATCH_INT_INFO |
+				USB_DEVICE_ID_MATCH_VENDOR |
+				USB_DEVICE_ID_MATCH_PRODUCT,
+		  .bInterfaceClass = USB_CLASS_COMM,
+	      .bInterfaceSubClass = USB_CDC_SUBCLASS_NCM,
+	      .bInterfaceProtocol = (USB_CDC_PROTO_NONE),
+	      .idVendor = 0x1519,
+	      .idProduct = 0x0452,
+		  .driver_info = (unsigned long)&cdc_ncm_info_alt
+		},
+		{ USB_INTERFACE_INFO(USB_CLASS_COMM, USB_CDC_SUBCLASS_NCM,
+				USB_CDC_PROTO_NONE),
+		  .driver_info = (unsigned long)&cdc_ncm_info
+		},
 	{
 	},
 };
@@ -454,6 +465,8 @@ static void cdc_ncm_free(struct cdc_ncm_ctx *ctx)
 	kfree(ctx);
 }
 
+
+
 static int cdc_ncm_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	struct cdc_ncm_ctx *ctx;
@@ -609,6 +622,13 @@ error:
 	dev->data[0] = 0;
 	dev_info(&dev->udev->dev, "bind() failure\n");
 	return -ENODEV;
+}
+
+static int cdc_ncm_bind_alt(struct usbnet *dev, struct usb_interface *intf)
+{
+	dev_info(&dev->udev->dev, "Use of alternate settings\n");
+	dev->net->addr_len = 1;
+	return cdc_ncm_bind(dev, intf);
 }
 
 static void cdc_ncm_unbind(struct usbnet *dev, struct usb_interface *intf)
@@ -1059,6 +1079,7 @@ static int cdc_ncm_rx_fixup(struct usbnet *dev, struct sk_buff *skb_in)
 			if (!skb)
 				goto error;
 			skb->len = len;
+			skb->truesize = len + sizeof(struct sk_buff);
 			skb->data = ((u8 *)skb_in->data) + offset;
 			skb_set_tail_pointer(skb, len);
 			usbnet_skb_return(dev, skb);
@@ -1190,6 +1211,18 @@ static int cdc_ncm_manage_power(struct usbnet *dev, int status)
 	dev->intf->needs_remote_wakeup = status;
 	return 0;
 }
+
+static const struct driver_info cdc_ncm_info_alt = {
+	.description = "CDC NCM",
+	.flags = FLAG_POINTTOPOINT | FLAG_NO_SETINT | FLAG_MULTI_PACKET,
+	.bind = cdc_ncm_bind_alt,
+	.unbind = cdc_ncm_unbind,
+	.check_connect = cdc_ncm_check_connect,
+	.manage_power = cdc_ncm_manage_power,
+	.status = cdc_ncm_status,
+	.rx_fixup = cdc_ncm_rx_fixup,
+	.tx_fixup = cdc_ncm_tx_fixup,
+};
 
 static const struct driver_info cdc_ncm_info = {
 	.description = "CDC NCM",

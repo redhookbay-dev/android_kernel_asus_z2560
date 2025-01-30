@@ -2,10 +2,31 @@
 #define _INTEL_RINGBUFFER_H_
 
 struct  intel_hw_status_page {
-	u32	__iomem	*page_addr;
+	u32		*page_addr;
 	unsigned int	gfx_addr;
 	struct		drm_i915_gem_object *obj;
 };
+
+
+/* These values must match the requirements of the ring save/restore functions
+* which may need to change for different versions of the chip*/
+#define COMMON_RING_CTX_SIZE 6
+
+#define RCS_RING_CTX_SIZE 13
+#define VCS_RING_CTX_SIZE 10
+#define BCS_RING_CTX_SIZE 11
+
+#define MAX_CTX(a, b) (((a) > (b)) ? (a) : (b))
+
+/* Largest of individual rings + common*/
+#define I915_RING_CONTEXT_SIZE (COMMON_RING_CTX_SIZE + \
+				MAX_CTX(MAX_CTX(RCS_RING_CTX_SIZE, \
+						VCS_RING_CTX_SIZE), \
+						BCS_RING_CTX_SIZE))
+
+#define WATCHDOG_ENABLE 0
+#define RCS_WATCHDOG_DISABLE 1
+#define VCS_WATCHDOG_DISABLE 0xFFFFFFFF
 
 #define I915_READ_TAIL(ring) I915_READ(RING_TAIL((ring)->mmio_base))
 #define I915_WRITE_TAIL(ring, val) I915_WRITE(RING_TAIL((ring)->mmio_base), val)
@@ -22,9 +43,17 @@ struct  intel_hw_status_page {
 #define I915_READ_IMR(ring) I915_READ(RING_IMR((ring)->mmio_base))
 #define I915_WRITE_IMR(ring, val) I915_WRITE(RING_IMR((ring)->mmio_base), val)
 
+#define I915_READ_MODE(ring) \
+	I915_READ(RING_MI_MODE((ring)->mmio_base))
+#define I915_WRITE_MODE(ring, val) \
+	I915_WRITE(RING_MI_MODE((ring)->mmio_base), val)
+
 #define I915_READ_NOPID(ring) I915_READ(RING_NOPID((ring)->mmio_base))
 #define I915_READ_SYNC_0(ring) I915_READ(RING_SYNC_0((ring)->mmio_base))
 #define I915_READ_SYNC_1(ring) I915_READ(RING_SYNC_1((ring)->mmio_base))
+
+#define RESET_HEAD_TAIL   0x1
+#define FORCE_ADVANCE     0x2
 
 struct  intel_ring_buffer {
 	const char	*name;
@@ -56,12 +85,9 @@ struct  intel_ring_buffer {
 	 */
 	u32		last_retired_head;
 
-	spinlock_t	irq_lock;
-	u32		irq_refcount;
-	u32		irq_mask;
-	u32		irq_seqno;		/* last seq seem at irq time */
+	u32		irq_refcount;		/* protected by dev_priv->irq_lock */
+	u32		irq_enable_mask;	/* bitmask to enable ring interrupt */
 	u32		trace_irq_seqno;
-	u32		waiting_seqno;
 	u32		sync_seqno[I915_NUM_RINGS-1];
 	bool __must_check (*irq_get)(struct intel_ring_buffer *ring);
 	void		(*irq_put)(struct intel_ring_buffer *ring);
@@ -75,13 +101,33 @@ struct  intel_ring_buffer {
 				  u32	flush_domains);
 	int		(*add_request)(struct intel_ring_buffer *ring,
 				       u32 *seqno);
-	u32		(*get_seqno)(struct intel_ring_buffer *ring);
+	/* Some chipsets are not quite as coherent as advertised and need
+	 * an expensive kick to force a true read of the up-to-date seqno.
+	 * However, the up-to-date seqno is not always required and the last
+	 * seen value is good enough. Note that the seqno will always be
+	 * monotonic, even if not coherent.
+	 */
+	u32		(*get_seqno)(struct intel_ring_buffer *ring,
+				     bool lazy_coherency);
 	int		(*dispatch_execbuffer)(struct intel_ring_buffer *ring,
-					       u32 offset, u32 length);
+					u32 offset, u32 length,
+					void *priv_data, u32 priv_length);
 	void		(*cleanup)(struct intel_ring_buffer *ring);
 	int		(*sync_to)(struct intel_ring_buffer *ring,
 				   struct intel_ring_buffer *to,
 				   u32 seqno);
+
+	int		(*enable)(struct intel_ring_buffer *ring);
+	int		(*disable)(struct intel_ring_buffer *ring);
+	int		(*start)(struct intel_ring_buffer *ring);
+	int		(*stop)(struct intel_ring_buffer *ring);
+	int		(*reset)(struct intel_ring_buffer *ring);
+	int		(*save)(struct intel_ring_buffer *ring,
+				uint32_t *data, uint32_t max,
+				u32 flags);
+	int		(*restore)(struct intel_ring_buffer *ring,
+				uint32_t *data, uint32_t max);
+	int		(*invalidate_tlb)(struct intel_ring_buffer *ring);
 
 	u32		semaphore_register[3]; /*our mbox written by others */
 	u32		signal_mbox[2]; /* mboxes this ring signals to */
@@ -104,24 +150,34 @@ struct  intel_ring_buffer {
 	struct list_head request_list;
 
 	/**
-	 * List of objects currently pending a GPU write flush.
-	 *
-	 * All elements on this list will belong to either the
-	 * active_list or flushing_list, last_rendering_seqno can
-	 * be used to differentiate between the two elements.
-	 */
-	struct list_head gpu_write_list;
-
-	/**
 	 * Do we have some not yet emitted requests outstanding?
 	 */
 	u32 outstanding_lazy_request;
+	bool gpu_caches_dirty;
 
 	wait_queue_head_t irq_queue;
-	drm_local_map_t map;
+
+	/**
+	 * Do an explicit TLB flush before MI_SET_CONTEXT
+	 */
+	bool itlb_before_ctx_switch;
+	struct i915_hw_context *default_context;
+	struct drm_i915_gem_object *last_context_obj;
+
+	/* Area large enough to store all the register
+	* data associated with this ring*/
+	u32 saved_state[I915_RING_CONTEXT_SIZE];
+
+	uint32_t last_irq_seqno;
 
 	void *private;
 };
+
+static inline bool
+intel_ring_initialized(struct intel_ring_buffer *ring)
+{
+	return ring->obj != NULL;
+}
 
 static inline unsigned
 intel_ring_flag(struct intel_ring_buffer *ring)
@@ -152,7 +208,18 @@ static inline u32
 intel_read_status_page(struct intel_ring_buffer *ring,
 		       int reg)
 {
-	return ioread32(ring->status_page.page_addr + reg);
+	/* Ensure that the compiler doesn't optimize away the load. */
+	barrier();
+	return ring->status_page.page_addr[reg];
+}
+
+static inline void
+intel_write_status_page(struct intel_ring_buffer *ring,
+			int reg, uint32_t data)
+{
+	/* Ensure that the compiler doesn't optimize away the access. */
+	barrier();
+	ring->status_page.page_addr[reg] = data;
 }
 
 /**
@@ -170,10 +237,9 @@ intel_read_status_page(struct intel_ring_buffer *ring,
  *
  * The area from dword 0x20 to 0x3ff is available for driver usage.
  */
-#define READ_HWSP(dev_priv, reg) intel_read_status_page(LP_RING(dev_priv), reg)
-#define READ_BREADCRUMB(dev_priv) READ_HWSP(dev_priv, I915_BREADCRUMB_INDEX)
 #define I915_GEM_HWS_INDEX		0x20
-#define I915_BREADCRUMB_INDEX		0x21
+#define I915_GEM_SCRATCH_INDEX		0x28 /* Some commands need a scratch store */
+#define I915_GEM_PGFLIP_INDEX           0x30
 
 void intel_cleanup_ring_buffer(struct intel_ring_buffer *ring);
 
@@ -185,6 +251,7 @@ static inline int intel_wait_ring_idle(struct intel_ring_buffer *ring)
 
 int __must_check intel_ring_begin(struct intel_ring_buffer *ring, int n);
 
+
 static inline void intel_ring_emit(struct intel_ring_buffer *ring,
 				   u32 data)
 {
@@ -195,6 +262,8 @@ static inline void intel_ring_emit(struct intel_ring_buffer *ring,
 void intel_ring_advance(struct intel_ring_buffer *ring);
 
 u32 intel_ring_get_seqno(struct intel_ring_buffer *ring);
+int intel_ring_flush_all_caches(struct intel_ring_buffer *ring);
+int intel_ring_invalidate_all_caches(struct intel_ring_buffer *ring);
 
 int intel_init_render_ring_buffer(struct drm_device *dev);
 int intel_init_bsd_ring_buffer(struct drm_device *dev);
@@ -216,5 +285,19 @@ static inline void i915_trace_irq_get(struct intel_ring_buffer *ring, u32 seqno)
 
 /* DRI warts */
 int intel_render_ring_init_dri(struct drm_device *dev, u64 start, u32 size);
+
+void intel_ring_resample(struct intel_ring_buffer *ring);
+int intel_ring_disable(struct intel_ring_buffer *ring);
+int intel_ring_enable(struct intel_ring_buffer *ring);
+int intel_ring_reset(struct intel_ring_buffer *ring);
+int intel_ring_save(struct intel_ring_buffer *ring,
+			u32 flags);
+int intel_ring_restore(struct intel_ring_buffer *ring);
+
+u32 get_pipe_control_scratch_addr(struct intel_ring_buffer *ring);
+
+int intel_ring_supports_watchdog(struct intel_ring_buffer *ring);
+int intel_ring_start_watchdog(struct intel_ring_buffer *ring);
+int intel_ring_stop_watchdog(struct intel_ring_buffer *ring);
 
 #endif /* _INTEL_RINGBUFFER_H_ */

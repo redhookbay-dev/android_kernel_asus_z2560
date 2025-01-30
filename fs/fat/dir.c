@@ -12,7 +12,7 @@
  *  Rewritten for constant inumbers. Plugged buffer overrun in readdir(). AV
  *  Short name translation 1999, 2001 by Wolfram Pienkoss <wp@bszh.de>
  */
-
+#include <linux/genhd.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/time.h>
@@ -83,6 +83,8 @@ static int fat__get_entry(struct inode *dir, loff_t *pos,
 	sector_t phys, iblock;
 	unsigned long mapped_blocks;
 	int err, offset;
+    struct gendisk *disk;
+    static u8 last_err;
 
 next:
 	if (*bh)
@@ -90,20 +92,26 @@ next:
 
 	*bh = NULL;
 	iblock = *pos >> sb->s_blocksize_bits;
+        disk = sb->s_bdev->bd_disk;
 	err = fat_bmap(dir, iblock, &phys, &mapped_blocks, 0);
-	if (err || !phys)
+	if (err || !phys || disk_is_media_present(disk) == 0){
 		return -1;	/* beyond EOF or error */
+    }
 
 	fat_dir_readahead(dir, iblock, phys);
 
 	*bh = sb_bread(sb, phys);
 	if (*bh == NULL) {
-		fat_msg(sb, KERN_ERR, "Directory bread(block %llu) failed",
-		       (llu)phys);
+		if (last_err & 0x01) {
+			fat_msg(sb, KERN_ERR, "Directory bread(block %llu) failed",
+					(llu)phys);
+			last_err >>= 1;
+		}
 		/* skip this block */
 		*pos = (iblock + 1) << sb->s_blocksize_bits;
 		goto next;
 	}
+	last_err = 0xff;
 
 	offset = *pos & (sb->s_blocksize - 1);
 	*pos += sizeof(struct msdos_dir_entry);
@@ -415,14 +423,15 @@ parse_record:
 			}
 			i += chl;
 		}
-		if (!last_u)
-			continue;
 
-		/* Compare shortname */
-		bufuname[last_u] = 0x0000;
-		len = fat_uni_to_x8(sb, bufuname, bufname, sizeof(bufname));
-		if (fat_name_match(sbi, name, name_len, bufname, len))
-			goto found;
+		if (last_u) {
+			/* Compare shortname */
+			bufuname[last_u] = 0x0000;
+			len = fat_uni_to_x8(sb, bufuname, bufname, sizeof(bufname));
+			if (fat_name_match(sbi, name, name_len, bufname, len))
+				goto found;
+		}
+
 
 		if (nr_slots) {
 			void *longname = unicode + FAT_MAX_UNI_CHARS;
@@ -754,6 +763,13 @@ static int fat_ioctl_readdir(struct inode *inode, struct file *filp,
 	return ret;
 }
 
+static int fat_ioctl_volume_id(struct inode *dir)
+{
+	struct super_block *sb = dir->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	return sbi->vol_id;
+}
+
 static long fat_dir_ioctl(struct file *filp, unsigned int cmd,
 			  unsigned long arg)
 {
@@ -770,6 +786,8 @@ static long fat_dir_ioctl(struct file *filp, unsigned int cmd,
 		short_only = 0;
 		both = 1;
 		break;
+	case VFAT_IOCTL_GET_VOLUME_ID:
+		return fat_ioctl_volume_id(inode);
 	default:
 		return fat_generic_ioctl(filp, cmd, arg);
 	}

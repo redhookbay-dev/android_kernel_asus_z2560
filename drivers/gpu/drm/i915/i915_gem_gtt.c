@@ -29,6 +29,31 @@
 #include "i915_trace.h"
 #include "intel_drv.h"
 
+static inline uint32_t pte_encode(struct drm_device *dev,
+				dma_addr_t addr,
+				enum i915_cache_level level)
+{
+	uint32_t pte = GEN6_PTE_VALID;
+
+	pte |= GEN6_PTE_ADDR_ENCODE(addr);
+	switch (level) {
+	case I915_CACHE_LLC_MLC:
+		pte |= GEN6_PTE_CACHE_LLC_MLC;
+		break;
+	case I915_CACHE_LLC_ELLC:
+	case I915_CACHE_LLC:
+		pte |= GEN6_PTE_CACHE_LLC;
+		break;
+	default:
+	case I915_CACHE_ELLC:
+	case I915_CACHE_NONE:
+		pte |= GEN6_PTE_UNCACHED;
+		break;
+	}
+
+	return pte;
+}
+
 /* PPGTT support for Sandybdrige/Gen6 and later */
 static void i915_ppgtt_clear_range(struct i915_hw_ppgtt *ppgtt,
 				   unsigned first_entry,
@@ -40,8 +65,8 @@ static void i915_ppgtt_clear_range(struct i915_hw_ppgtt *ppgtt,
 	unsigned first_pte = first_entry % I915_PPGTT_PT_ENTRIES;
 	unsigned last_pte, i;
 
-	scratch_pte = GEN6_PTE_ADDR_ENCODE(ppgtt->scratch_page_dma_addr);
-	scratch_pte |= GEN6_PTE_VALID | GEN6_PTE_CACHE_LLC;
+	scratch_pte = pte_encode(ppgtt->dev, ppgtt->scratch_page_dma_addr,
+			I915_CACHE_LLC);
 
 	while (num_entries) {
 		last_pte = first_pte + num_entries;
@@ -78,6 +103,7 @@ int i915_gem_init_aliasing_ppgtt(struct drm_device *dev)
 	if (!ppgtt)
 		return ret;
 
+	ppgtt->dev = dev;
 	ppgtt->num_pd_entries = I915_PPGTT_PD_ENTRIES;
 	ppgtt->pt_pages = kzalloc(sizeof(struct page *)*ppgtt->num_pd_entries,
 				  GFP_KERNEL);
@@ -96,11 +122,10 @@ int i915_gem_init_aliasing_ppgtt(struct drm_device *dev)
 					     GFP_KERNEL);
 		if (!ppgtt->pt_dma_addr)
 			goto err_pt_alloc;
-	}
 
-	for (i = 0; i < ppgtt->num_pd_entries; i++) {
-		dma_addr_t pt_addr;
-		if (dev_priv->mm.gtt->needs_dmar) {
+		for (i = 0; i < ppgtt->num_pd_entries; i++) {
+			dma_addr_t pt_addr;
+
 			pt_addr = pci_map_page(dev->pdev, ppgtt->pt_pages[i],
 					       0, 4096,
 					       PCI_DMA_BIDIRECTIONAL);
@@ -112,8 +137,7 @@ int i915_gem_init_aliasing_ppgtt(struct drm_device *dev)
 
 			}
 			ppgtt->pt_dma_addr[i] = pt_addr;
-		} else
-			pt_addr = page_to_phys(ppgtt->pt_pages[i]);
+		}
 	}
 
 	ppgtt->scratch_page_dma_addr = dev_priv->mm.gtt->scratch_page_dma;
@@ -172,7 +196,8 @@ static void i915_ppgtt_insert_sg_entries(struct i915_hw_ppgtt *ppgtt,
 					 struct scatterlist *sg_list,
 					 unsigned sg_len,
 					 unsigned first_entry,
-					 uint32_t pte_flags)
+					 enum i915_cache_level cache_level,
+					 int gt_ro)
 {
 	uint32_t *pt_vaddr, pte;
 	unsigned act_pd = first_entry / I915_PPGTT_PT_ENTRIES;
@@ -192,8 +217,15 @@ static void i915_ppgtt_insert_sg_entries(struct i915_hw_ppgtt *ppgtt,
 
 		for (j = first_pte; j < I915_PPGTT_PT_ENTRIES; j++) {
 			page_addr = sg_dma_address(sg) + (m << PAGE_SHIFT);
-			pte = GEN6_PTE_ADDR_ENCODE(page_addr);
-			pt_vaddr[j] = pte | pte_flags;
+			pte = pte_encode(ppgtt->dev, page_addr, cache_level);
+			if (IS_VALLEYVIEW(ppgtt->dev)) {
+				/* Handle read-only request */
+				if (gt_ro)
+					pte &= ~VLV_PTE_WRITE_ENABLE;
+				else
+					pte |= VLV_PTE_WRITE_ENABLE;
+			}
+			pt_vaddr[j] = pte;
 
 			/* grab the next page */
 			m++;
@@ -217,7 +249,9 @@ static void i915_ppgtt_insert_sg_entries(struct i915_hw_ppgtt *ppgtt,
 
 static void i915_ppgtt_insert_pages(struct i915_hw_ppgtt *ppgtt,
 				    unsigned first_entry, unsigned num_entries,
-				    struct page **pages, uint32_t pte_flags)
+				    struct page **pages,
+				    enum i915_cache_level cache_level,
+				    int gt_ro)
 {
 	uint32_t *pt_vaddr, pte;
 	unsigned act_pd = first_entry / I915_PPGTT_PT_ENTRIES;
@@ -233,8 +267,15 @@ static void i915_ppgtt_insert_pages(struct i915_hw_ppgtt *ppgtt,
 
 		for (i = first_pte; i < last_pte; i++) {
 			page_addr = page_to_phys(*pages);
-			pte = GEN6_PTE_ADDR_ENCODE(page_addr);
-			pt_vaddr[i] = pte | pte_flags;
+			pte = pte_encode(ppgtt->dev, page_addr, cache_level);
+			if (IS_VALLEYVIEW(ppgtt->dev)) {
+				/* Handle read-only request */
+				if (gt_ro)
+					pte &= ~VLV_PTE_WRITE_ENABLE;
+				else
+					pte |= VLV_PTE_WRITE_ENABLE;
+			}
+			pt_vaddr[i] = pte;
 
 			pages++;
 		}
@@ -253,36 +294,27 @@ void i915_ppgtt_bind_object(struct i915_hw_ppgtt *ppgtt,
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	uint32_t pte_flags = GEN6_PTE_VALID;
 
-	switch (cache_level) {
-	case I915_CACHE_LLC_MLC:
-		pte_flags |= GEN6_PTE_CACHE_LLC_MLC;
-		break;
-	case I915_CACHE_LLC:
-		pte_flags |= GEN6_PTE_CACHE_LLC;
-		break;
-	case I915_CACHE_NONE:
-		pte_flags |= GEN6_PTE_UNCACHED;
-		break;
-	default:
-		BUG();
-	}
-
-	if (dev_priv->mm.gtt->needs_dmar) {
+	if (obj->sg_table) {
+		i915_ppgtt_insert_sg_entries(ppgtt,
+					     obj->sg_table->sgl,
+					     obj->sg_table->nents,
+					     obj->gtt_space->start >> PAGE_SHIFT,
+					     cache_level, obj->gt_ro);
+	} else if (dev_priv->mm.gtt->needs_dmar) {
 		BUG_ON(!obj->sg_list);
 
 		i915_ppgtt_insert_sg_entries(ppgtt,
 					     obj->sg_list,
 					     obj->num_sg,
 					     obj->gtt_space->start >> PAGE_SHIFT,
-					     pte_flags);
+					     cache_level, obj->gt_ro);
 	} else
 		i915_ppgtt_insert_pages(ppgtt,
 					obj->gtt_space->start >> PAGE_SHIFT,
 					obj->base.size >> PAGE_SHIFT,
 					obj->pages,
-					pte_flags);
+					cache_level, obj->gt_ro);
 }
 
 void i915_ppgtt_unbind_object(struct i915_hw_ppgtt *ppgtt,
@@ -297,6 +329,14 @@ void i915_ppgtt_unbind_object(struct i915_hw_ppgtt *ppgtt,
 static unsigned int cache_level_to_agp_type(struct drm_device *dev,
 					    enum i915_cache_level cache_level)
 {
+	/* get encoding which can be later updated to indicate GPU read-only */
+	if (IS_VALLEYVIEW(dev)) {
+		unsigned int ret;
+		ret = pte_encode(dev, 0, cache_level);
+		ret |= AGP_USER_ENCODED;
+		return ret;
+	}
+
 	switch (cache_level) {
 	case I915_CACHE_LLC_MLC:
 		if (INTEL_INFO(dev)->gen >= 6)
@@ -319,7 +359,7 @@ static bool do_idling(struct drm_i915_private *dev_priv)
 
 	if (unlikely(dev_priv->mm.gtt->do_idle_maps)) {
 		dev_priv->mm.interruptible = false;
-		if (i915_gpu_idle(dev_priv->dev, false)) {
+		if (i915_gpu_idle(dev_priv->dev)) {
 			DRM_ERROR("Couldn't idle GPU\n");
 			/* Wait a bit, in hopes it avoids the hang */
 			udelay(10);
@@ -346,48 +386,48 @@ void i915_gem_restore_gtt_mappings(struct drm_device *dev)
 
 	list_for_each_entry(obj, &dev_priv->mm.gtt_list, gtt_list) {
 		i915_gem_clflush_object(obj);
-		i915_gem_gtt_rebind_object(obj, obj->cache_level);
+		i915_gem_gtt_bind_object(obj, obj->cache_level);
 	}
 
 	intel_gtt_chipset_flush();
 }
 
-int i915_gem_gtt_bind_object(struct drm_i915_gem_object *obj)
+int i915_gem_gtt_prepare_object(struct drm_i915_gem_object *obj)
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	unsigned int agp_type = cache_level_to_agp_type(dev, obj->cache_level);
-	int ret;
 
-	if (dev_priv->mm.gtt->needs_dmar) {
-		ret = intel_gtt_map_memory(obj->pages,
-					   obj->base.size >> PAGE_SHIFT,
-					   &obj->sg_list,
-					   &obj->num_sg);
-		if (ret != 0)
-			return ret;
-
-		intel_gtt_insert_sg_entries(obj->sg_list,
-					    obj->num_sg,
-					    obj->gtt_space->start >> PAGE_SHIFT,
-					    agp_type);
-	} else
-		intel_gtt_insert_pages(obj->gtt_space->start >> PAGE_SHIFT,
-				       obj->base.size >> PAGE_SHIFT,
-				       obj->pages,
-				       agp_type);
-
-	return 0;
+	/* don't map imported dma buf objects */
+	if (dev_priv->mm.gtt->needs_dmar && !obj->sg_table)
+		return intel_gtt_map_memory(obj->pages,
+					    obj->base.size >> PAGE_SHIFT,
+					    &obj->sg_list,
+					    &obj->num_sg);
+	else
+		return 0;
 }
 
-void i915_gem_gtt_rebind_object(struct drm_i915_gem_object *obj,
-				enum i915_cache_level cache_level)
+void i915_gem_gtt_bind_object(struct drm_i915_gem_object *obj,
+			      enum i915_cache_level cache_level)
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	unsigned int agp_type = cache_level_to_agp_type(dev, cache_level);
 
-	if (dev_priv->mm.gtt->needs_dmar) {
+	if (IS_VALLEYVIEW(dev)) {
+		/* set buffer as read-only for GPU if required */
+		if (obj->gt_ro)
+			agp_type &= ~VLV_PTE_WRITE_ENABLE;
+		else
+			agp_type |= VLV_PTE_WRITE_ENABLE;
+	}
+
+	if (obj->sg_table) {
+		intel_gtt_insert_sg_entries(obj->sg_table->sgl,
+					    obj->sg_table->nents,
+					    obj->gtt_space->start >> PAGE_SHIFT,
+					    agp_type);
+	} else if (dev_priv->mm.gtt->needs_dmar) {
 		BUG_ON(!obj->sg_list);
 
 		intel_gtt_insert_sg_entries(obj->sg_list,
@@ -399,9 +439,19 @@ void i915_gem_gtt_rebind_object(struct drm_i915_gem_object *obj,
 				       obj->base.size >> PAGE_SHIFT,
 				       obj->pages,
 				       agp_type);
+
+	obj->has_global_gtt_mapping = 1;
 }
 
 void i915_gem_gtt_unbind_object(struct drm_i915_gem_object *obj)
+{
+	intel_gtt_clear_range(obj->gtt_space->start >> PAGE_SHIFT,
+			      obj->base.size >> PAGE_SHIFT);
+
+	obj->has_global_gtt_mapping = 0;
+}
+
+void i915_gem_gtt_finish_object(struct drm_i915_gem_object *obj)
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -409,13 +459,49 @@ void i915_gem_gtt_unbind_object(struct drm_i915_gem_object *obj)
 
 	interruptible = do_idling(dev_priv);
 
-	intel_gtt_clear_range(obj->gtt_space->start >> PAGE_SHIFT,
-			      obj->base.size >> PAGE_SHIFT);
-
 	if (obj->sg_list) {
 		intel_gtt_unmap_memory(obj->sg_list, obj->num_sg);
 		obj->sg_list = NULL;
 	}
 
 	undo_idling(dev_priv, interruptible);
+}
+
+static void i915_gtt_color_adjust(struct drm_mm_node *node,
+				  unsigned long color,
+				  unsigned long *start,
+				  unsigned long *end)
+{
+	if (node->color != color)
+		*start += 4096;
+
+	if (!list_empty(&node->node_list)) {
+		node = list_entry(node->node_list.next,
+				  struct drm_mm_node,
+				  node_list);
+		if (node->allocated && node->color != color)
+			*end -= 4096;
+	}
+}
+
+void i915_gem_init_global_gtt(struct drm_device *dev,
+			      unsigned long start,
+			      unsigned long mappable_end,
+			      unsigned long end)
+{
+	drm_i915_private_t *dev_priv = dev->dev_private;
+
+	/* Substract the guard page ... */
+	drm_mm_init(&dev_priv->mm.gtt_space, start, end - start - PAGE_SIZE);
+	if (!HAS_LLC(dev))
+		dev_priv->mm.gtt_space.color_adjust = i915_gtt_color_adjust;
+
+	dev_priv->mm.gtt_start = start;
+	dev_priv->mm.gtt_mappable_end = mappable_end;
+	dev_priv->mm.gtt_end = end;
+	dev_priv->mm.gtt_total = end - start;
+	dev_priv->mm.mappable_gtt_total = min(end, mappable_end) - start;
+
+	/* ... but ensure that we clear the entire range. */
+	intel_gtt_clear_range(start / PAGE_SIZE, (end-start) / PAGE_SIZE);
 }

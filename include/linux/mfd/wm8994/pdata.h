@@ -27,8 +27,9 @@ struct wm8994_ldo_pdata {
 
 #define WM8994_CONFIGURE_GPIO 0x10000
 
+#define WM8994_NUM_AIF	2
 #define WM8994_DRC_REGS 5
-#define WM8994_EQ_REGS  20
+#define WM8994_EQ_REGS  21
 #define WM8958_MBC_CUTOFF_REGS 20
 #define WM8958_MBC_COEFF_REGS  48
 #define WM8958_MBC_COMBINED_REGS 56
@@ -141,6 +142,7 @@ struct wm8994_pdata {
 	struct wm8994_ldo_pdata ldo[WM8994_NUM_LDO];
 
 	int irq_base;  /** Base IRQ number for WM8994, required for IRQs */
+	unsigned long irq_flags; /** user irq flags */
 
         int num_drc_cfgs;
         struct wm8994_drc_cfg *drc_cfgs;
@@ -170,6 +172,16 @@ struct wm8994_pdata {
         /* Common mode feedback */
         unsigned int lineout1fb:1;
         unsigned int lineout2fb:1;
+
+	/* Delay between detecting a jack and starting microphone
+	 * detect (specified in ms)
+	 */
+	int micdet_delay;
+
+	/* Delay between microphone detect completing and reporting on
+	 * insert (specified in ms)
+	 */
+	int mic_id_delay;
 
 	/* IRQ for microphone detection if brought out directly as a
 	 * signal.
@@ -205,6 +217,11 @@ struct wm8994_pdata {
 	 * system.
 	 */
 	bool spkmode_pu;
+
+	/**
+	 * Override the params for an AIF
+	 */
+	int override_rates[WM8994_NUM_AIF];
 };
 
 #endif

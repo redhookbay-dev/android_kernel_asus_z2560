@@ -40,6 +40,19 @@ static void disk_add_events(struct gendisk *disk);
 static void disk_del_events(struct gendisk *disk);
 static void disk_release_events(struct gendisk *disk);
 
+int disk_is_media_present(struct gendisk *disk)
+{
+    const struct block_device_operations *ops;
+    if (!disk || (ops = disk->fops) == NULL)
+        return -1;
+
+    if (ops->is_media_present) {
+        return ops->is_media_present(disk);
+    }
+    return 1;
+}
+EXPORT_SYMBOL_GPL(disk_is_media_present);
+
 /**
  * disk_get_part - get partition
  * @disk: disk to look partition from
@@ -1110,9 +1123,26 @@ static void disk_release(struct device *dev)
 		blk_put_queue(disk->queue);
 	kfree(disk);
 }
+
+static int disk_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	struct gendisk *disk = dev_to_disk(dev);
+	struct disk_part_iter piter;
+	struct hd_struct *part;
+	int cnt = 0;
+
+	disk_part_iter_init(&piter, disk, 0);
+	while((part = disk_part_iter_next(&piter)))
+		cnt++;
+	disk_part_iter_exit(&piter);
+	add_uevent_var(env, "NPARTS=%u", cnt);
+	return 0;
+}
+
 struct class block_class = {
 	.name		= "block",
 };
+EXPORT_SYMBOL(block_class);
 
 static char *block_devnode(struct device *dev, umode_t *mode)
 {
@@ -1128,6 +1158,7 @@ static struct device_type disk_type = {
 	.groups		= disk_attr_groups,
 	.release	= disk_release,
 	.devnode	= block_devnode,
+	.uevent		= disk_uevent,
 };
 
 #ifdef CONFIG_PROC_FS

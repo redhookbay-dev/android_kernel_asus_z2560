@@ -30,7 +30,85 @@
 #include <linux/of_gpio.h>
 #include <linux/spinlock.h>
 
+
+#if defined(CONFIG_PF400CG) && defined(CONFIG_EEPROM_PADSTATION)
+#include <linux/microp_notify.h>
+static struct input_dev *virtual_volume_btn;
+static int virtual_volume_btn_report(struct notifier_block *this, unsigned long event, void *ptr){
+        if(event==P01_VOLUP_KEY_PRESSED){
+                pr_info("[virtual_volume]vol_up pressed!");
+                input_event(virtual_volume_btn, EV_KEY, KEY_VOLUMEUP, 1);
+                input_sync(virtual_volume_btn);
+        }
+        if(event==P01_VOLUP_KEY_RELEASED){
+                pr_info("[virtual_volume]vol_up released!");
+                input_event(virtual_volume_btn, EV_KEY, KEY_VOLUMEUP, 0);
+                input_sync(virtual_volume_btn);
+        }
+        if(event==P01_VOLDN_KEY_PRESSED){
+                pr_info("[virtual_volume]vol_down pressed!");
+                input_event(virtual_volume_btn, EV_KEY, KEY_VOLUMEDOWN, 1);
+                input_sync(virtual_volume_btn);
+        }
+        if(event==P01_VOLDN_KEY_RELEASED){
+                pr_info("[virtual_volume_btn]vol_down released!");
+                input_event(virtual_volume_btn, EV_KEY, KEY_VOLUMEDOWN, 0);
+                input_sync(virtual_volume_btn);
+        }
+        return 0;
+}
+
+static struct notifier_block virtual_volume_btn_notifier = {
+        .notifier_call = virtual_volume_btn_report,    // callback function
+};
+static int Add_virtual_volume_btn()
+{
+        int ret;
+
+        virtual_volume_btn = input_allocate_device();
+        if (unlikely(!virtual_volume_btn)) {
+                pr_info("[virtual_volume]input_allocate_device error!\n");
+                return -ENOMEM;
+        }
+
+        virtual_volume_btn->name = "virtual_volume_btn";
+        virtual_volume_btn->phys = "/dev/input/virtual_volume_btn";
+        virtual_volume_btn->dev.parent = NULL;
+        input_set_capability(virtual_volume_btn, EV_KEY, KEY_VOLUMEDOWN);
+        input_set_capability(virtual_volume_btn, EV_KEY, KEY_VOLUMEUP);
+
+        ret = input_register_device(virtual_volume_btn);
+        if (ret) {
+                pr_info("[virtual_volume]unable to register input dev, error %d\n",ret);
+                goto fail_at_reg_input_dev;
+        }
+        ret = register_microp_notifier(&virtual_volume_btn_notifier);
+        if (ret) {
+                pr_info("[virtual_volume]unable to register microp notifier, error %d\n",ret);
+                goto fail_at_reg_notifier;
+        }
+        pr_info("[virtual_volume] Probe finish!!");
+
+        return 0;
+fail_at_reg_notifier:
+        input_unregister_device(virtual_volume_btn);
+fail_at_reg_input_dev:
+        input_free_device(virtual_volume_btn);
+        return ret;
+}
+
+static void Remove_virtual_volume_btn()
+{
+        input_unregister_device(virtual_volume_btn);
+        input_free_device(virtual_volume_btn);
+        unregister_microp_notifier(&virtual_volume_btn);
+}
+#endif
+
+
+struct gpio_keys_drvdata;
 struct gpio_button_data {
+	struct gpio_keys_drvdata *ddata;
 	const struct gpio_keys_button *button;
 	struct input_dev *input;
 	struct timer_list timer;
@@ -46,10 +124,35 @@ struct gpio_keys_drvdata {
 	struct input_dev *input;
 	struct mutex disable_lock;
 	unsigned int n_buttons;
+	int force_trigger;
 	int (*enable)(struct device *dev);
 	void (*disable)(struct device *dev);
 	struct gpio_button_data data[0];
 };
+
+static int gpio_keys_request_irq(int gpio, irq_handler_t isr,
+		unsigned long flags, const char *name, void *data)
+{
+	int ret;
+
+	if (gpio_cansleep(gpio))
+		ret = request_threaded_irq(gpio_to_irq(gpio), NULL, isr,
+				flags, name, data);
+	else
+		ret = request_irq(gpio_to_irq(gpio), isr, flags, name, data);
+	return ret;
+}
+
+static int gpio_keys_getval(int gpio)
+{
+	int ret;
+
+	if (gpio_cansleep(gpio))
+		ret = gpio_get_value_cansleep(gpio);
+	else
+		ret = gpio_get_value(gpio);
+	return ret;
+}
 
 /*
  * SYSFS interface for enabling/disabling keys and switches:
@@ -312,11 +415,59 @@ static DEVICE_ATTR(disabled_switches, S_IWUSR | S_IRUGO,
 		   gpio_keys_show_disabled_switches,
 		   gpio_keys_store_disabled_switches);
 
+static ssize_t gpio_keys_wakeup_enable(struct device *dev,
+		struct device_attribute *attr, const char *buf,
+			size_t size, int enable_wakeup)
+{
+	int i, wakeup = 0, ret = -EINVAL;
+	long code;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct gpio_keys_platform_data *pdata = pdev->dev.platform_data;
+
+	ret = kstrtol(buf, 10, &code);
+	if (ret != 0) {
+		dev_err(dev, "Invalid input.\n");
+		return ret;
+	}
+
+	for (i = 0; i < pdata->nbuttons; i++) {
+		struct gpio_keys_button *button = &pdata->buttons[i];
+		if ((int)code == button->code)
+			button->wakeup = enable_wakeup;
+		if (button->wakeup)
+			wakeup = button->wakeup;
+	}
+
+	device_init_wakeup(dev, wakeup);
+
+	return size;
+}
+
+static ssize_t gpio_keys_store_enabled_wakeup(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	return gpio_keys_wakeup_enable(dev, attr, buf, size, 1);
+}
+
+static ssize_t gpio_keys_store_disabled_wakeup(struct device *dev,
+	       struct device_attribute *attr, const char *buf, size_t size)
+{
+	return gpio_keys_wakeup_enable(dev, attr, buf, size, 0);
+}
+static DEVICE_ATTR(enabled_wakeup, S_IWUSR | S_IRUGO,
+		   NULL,
+		   gpio_keys_store_enabled_wakeup);
+static DEVICE_ATTR(disabled_wakeup, S_IWUSR | S_IRUGO,
+		   NULL,
+		   gpio_keys_store_disabled_wakeup);
+
 static struct attribute *gpio_keys_attrs[] = {
 	&dev_attr_keys.attr,
 	&dev_attr_switches.attr,
 	&dev_attr_disabled_keys.attr,
 	&dev_attr_disabled_switches.attr,
+	&dev_attr_enabled_wakeup.attr,
+	&dev_attr_disabled_wakeup.attr,
 	NULL,
 };
 
@@ -329,7 +480,8 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 	const struct gpio_keys_button *button = bdata->button;
 	struct input_dev *input = bdata->input;
 	unsigned int type = button->type ?: EV_KEY;
-	int state = (gpio_get_value_cansleep(button->gpio) ? 1 : 0) ^ button->active_low;
+	int state =
+		(gpio_keys_getval(button->gpio) ? 1 : 0) ^ button->active_low;
 
 	if (type == EV_ABS) {
 		if (state)
@@ -358,8 +510,24 @@ static void gpio_keys_gpio_timer(unsigned long _data)
 static irqreturn_t gpio_keys_gpio_isr(int irq, void *dev_id)
 {
 	struct gpio_button_data *bdata = dev_id;
+	struct gpio_keys_button *button;
+	struct input_dev *input;
+	unsigned int type;
+	int state;
 
+	BUG_ON(!bdata);
+	BUG_ON(!bdata->button);
 	BUG_ON(irq != bdata->irq);
+
+	button = bdata->button;
+	input = bdata->input;
+	state = (gpio_keys_getval(button->gpio) ? 1 : 0) ^ button->active_low;
+
+	if (bdata->ddata->force_trigger && !state) {
+		type = button->type ?: EV_KEY;
+		input_event(input, type, button->code, !state);
+		bdata->ddata->force_trigger = 0;
+	}
 
 	if (bdata->timer_debounce)
 		mod_timer(&bdata->timer,
@@ -504,7 +672,7 @@ static int __devinit gpio_keys_setup_key(struct platform_device *pdev,
 	if (!button->can_disable)
 		irqflags |= IRQF_SHARED;
 
-	error = request_any_context_irq(bdata->irq, isr, irqflags, desc, bdata);
+	error = gpio_keys_request_irq(button->gpio, isr, irqflags, desc, bdata);
 	if (error < 0) {
 		dev_err(dev, "Unable to claim irq %d; error %d\n",
 			bdata->irq, error);
@@ -699,6 +867,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 		const struct gpio_keys_button *button = &pdata->buttons[i];
 		struct gpio_button_data *bdata = &ddata->data[i];
 
+		bdata->ddata = ddata;
 		error = gpio_keys_setup_key(pdev, input, bdata, button);
 		if (error)
 			goto fail2;
@@ -784,12 +953,12 @@ static int gpio_keys_suspend(struct device *dev)
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
 	int i;
 
-	if (device_may_wakeup(dev)) {
-		for (i = 0; i < ddata->n_buttons; i++) {
-			struct gpio_button_data *bdata = &ddata->data[i];
-			if (bdata->button->wakeup)
-				enable_irq_wake(bdata->irq);
-		}
+	for (i = 0; i < ddata->n_buttons; i++) {
+		struct gpio_button_data *bdata = &ddata->data[i];
+		if (bdata->button->wakeup && device_may_wakeup(dev))
+			enable_irq_wake(bdata->irq);
+		else if (gpio_is_valid(bdata->button->gpio))
+			free_irq(bdata->irq, bdata);
 	}
 
 	return 0;
@@ -798,12 +967,31 @@ static int gpio_keys_suspend(struct device *dev)
 static int gpio_keys_resume(struct device *dev)
 {
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
-	int i;
+	unsigned long irqflags;
+	const char *desc;
+	int i, error;
+
+	ddata->force_trigger = 0;
 
 	for (i = 0; i < ddata->n_buttons; i++) {
 		struct gpio_button_data *bdata = &ddata->data[i];
 		if (bdata->button->wakeup && device_may_wakeup(dev))
 			disable_irq_wake(bdata->irq);
+		else if (gpio_is_valid(bdata->button->gpio)) {
+			irqflags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+			desc = bdata->button->desc ?
+				bdata->button->desc : "gpio_keys";
+			if (!bdata->button->can_disable)
+				irqflags |= IRQF_SHARED;
+			error = gpio_keys_request_irq(bdata->button->gpio,
+					gpio_keys_gpio_isr, irqflags,
+					desc, bdata);
+			if (error) {
+				dev_err(dev, "Unable to claim irq %d; error %d\n",
+						bdata->irq, error);
+				return error;
+			}
+		}
 
 		if (gpio_is_valid(bdata->button->gpio))
 			gpio_keys_gpio_report_event(bdata);
@@ -812,28 +1000,63 @@ static int gpio_keys_resume(struct device *dev)
 
 	return 0;
 }
+
+static int gpio_keys_resume_noirq(struct device *dev)
+{
+	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
+
+	ddata->force_trigger = 1;
+	return 0;
+}
+
+static const struct dev_pm_ops gpio_keys_pm_ops = {
+	.suspend	= gpio_keys_suspend,
+	.resume		= gpio_keys_resume,
+	.resume_noirq	= gpio_keys_resume_noirq,
+};
 #endif
 
-static SIMPLE_DEV_PM_OPS(gpio_keys_pm_ops, gpio_keys_suspend, gpio_keys_resume);
+static struct platform_device_id gpio_keys_ids[] = {
+	{
+		.name = "gpio-keys",
+	}, {
+		.name = "gpio-lesskey-nrpt",
+	}, {
+		.name = "gpio-lesskey-rpt",
+	},
+};
+MODULE_DEVICE_TABLE(platform, gpio_keys_ids);
 
 static struct platform_driver gpio_keys_device_driver = {
 	.probe		= gpio_keys_probe,
 	.remove		= __devexit_p(gpio_keys_remove),
+	.id_table	= gpio_keys_ids,
 	.driver		= {
 		.name	= "gpio-keys",
 		.owner	= THIS_MODULE,
+#ifdef CONFIG_PM_SLEEP
 		.pm	= &gpio_keys_pm_ops,
+#endif
 		.of_match_table = gpio_keys_of_match,
 	}
 };
 
 static int __init gpio_keys_init(void)
 {
+#if defined(CONFIG_PF400CG) && defined(CONFIG_EEPROM_PADSTATION)
+	int ret=Add_virtual_volume_btn();
+	if(ret){
+		printk("[virtual_volume]PF400CG virtual volume key probe fail!");
+	}
+#endif
 	return platform_driver_register(&gpio_keys_device_driver);
 }
 
 static void __exit gpio_keys_exit(void)
 {
+#if defined(CONFIG_PF400CG) && defined(CONFIG_EEPROM_PADSTATION)
+        Remove_virtual_volume_btn();
+#endif
 	platform_driver_unregister(&gpio_keys_device_driver);
 }
 

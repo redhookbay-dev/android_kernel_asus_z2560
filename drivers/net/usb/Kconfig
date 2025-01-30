@@ -142,6 +142,8 @@ config USB_NET_AX8817X
  	  This driver should work with at least the following devices:
 	    * Aten UC210T
 	    * ASIX AX88172
+           * ASIX AX88772A
+           * ASIX AX88772B
 	    * Billionton Systems, USB2AR
 	    * Buffalo LUA-U2-KTX
 	    * Corega FEther USB2-TX

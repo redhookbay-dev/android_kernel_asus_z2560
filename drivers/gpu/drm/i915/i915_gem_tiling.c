@@ -92,7 +92,10 @@ i915_gem_detect_bit_6_swizzle(struct drm_device *dev)
 	uint32_t swizzle_x = I915_BIT_6_SWIZZLE_UNKNOWN;
 	uint32_t swizzle_y = I915_BIT_6_SWIZZLE_UNKNOWN;
 
-	if (INTEL_INFO(dev)->gen >= 6) {
+	if (IS_VALLEYVIEW(dev)) {
+		swizzle_x = I915_BIT_6_SWIZZLE_NONE;
+		swizzle_y = I915_BIT_6_SWIZZLE_NONE;
+	} else if (INTEL_INFO(dev)->gen >= 6) {
 		uint32_t dimm_c0, dimm_c1;
 		dimm_c0 = I915_READ(MAD_DIMM_C0);
 		dimm_c1 = I915_READ(MAD_DIMM_C1);
@@ -215,9 +218,12 @@ i915_tiling_ok(struct drm_device *dev, int stride, int size, int tiling_mode)
 		tile_width = 512;
 
 	/* check maximum stride & object size */
-	if (INTEL_INFO(dev)->gen >= 4) {
-		/* i965 stores the end address of the gtt mapping in the fence
-		 * reg, so dont bother to check the size */
+	/* i965+ stores the end address of the gtt mapping in the fence
+		* reg, so dont bother to check the size */
+	if (INTEL_INFO(dev)->gen >= 7) {
+		if (stride / 128 > GEN7_FENCE_MAX_PITCH_VAL)
+			return false;
+	} else if (INTEL_INFO(dev)->gen >= 4) {
 		if (stride / 128 > I965_FENCE_MAX_PITCH_VAL)
 			return false;
 	} else {
@@ -233,6 +239,9 @@ i915_tiling_ok(struct drm_device *dev, int stride, int size, int tiling_mode)
 		}
 	}
 
+	if (stride < tile_width)
+		return false;
+
 	/* 965+ just needs multiples of tile width */
 	if (INTEL_INFO(dev)->gen >= 4) {
 		if (stride & (tile_width - 1))
@@ -241,9 +250,6 @@ i915_tiling_ok(struct drm_device *dev, int stride, int size, int tiling_mode)
 	}
 
 	/* Pre-965 needs power of two tile widths */
-	if (stride < tile_width)
-		return false;
-
 	if (stride & (stride - 1))
 		return false;
 
@@ -354,9 +360,15 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		/* We need to rebind the object if its current allocation
 		 * no longer meets the alignment restrictions for its new
 		 * tiling mode. Otherwise we can just leave it alone, but
-		 * need to ensure that any fence register is cleared.
+		 * need to ensure that any fence register is updated before
+		 * the next fenced (either through the GTT or by the BLT unit
+		 * on older GPUs) access.
+		 *
+		 * After updating the tiling parameters, we then flag whether
+		 * we need to update an associated fence register. Note this
+		 * has to also include the unfenced register the GPU uses
+		 * whilst executing a fenced command for an untiled object.
 		 */
-		i915_gem_release_mmap(obj);
 
 		obj->map_and_fenceable =
 			obj->gtt_space == NULL ||
@@ -374,9 +386,15 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		}
 
 		if (ret == 0) {
-			obj->tiling_changed = true;
+			obj->fence_dirty =
+				obj->fenced_gpu_access ||
+				obj->fence_reg != I915_FENCE_REG_NONE;
+
 			obj->tiling_mode = args->tiling_mode;
 			obj->stride = args->stride;
+
+			/* Force the fence to be reacquired for GTT access */
+			i915_gem_release_mmap(obj);
 		}
 	}
 	/* we have to maintain this existing ABI... */

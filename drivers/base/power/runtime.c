@@ -11,6 +11,7 @@
 #include <linux/export.h>
 #include <linux/pm_runtime.h>
 #include <trace/events/rpm.h>
+#include <trace/events/power.h>
 #include "power.h"
 
 static int rpm_resume(struct device *dev, int rpmflags);
@@ -48,6 +49,7 @@ void update_pm_runtime_accounting(struct device *dev)
 static void __update_runtime_status(struct device *dev, enum rpm_status status)
 {
 	update_pm_runtime_accounting(dev);
+	trace_runtime_pm_status(dev, status);
 	dev->power.runtime_status = status;
 }
 
@@ -282,47 +284,6 @@ static int rpm_callback(int (*cb)(struct device *), struct device *dev)
 	return retval != -EACCES ? retval : -EIO;
 }
 
-struct rpm_qos_data {
-	ktime_t time_now;
-	s64 constraint_ns;
-};
-
-/**
- * rpm_update_qos_constraint - Update a given PM QoS constraint data.
- * @dev: Device whose timing data to use.
- * @data: PM QoS constraint data to update.
- *
- * Use the suspend timing data of @dev to update PM QoS constraint data pointed
- * to by @data.
- */
-static int rpm_update_qos_constraint(struct device *dev, void *data)
-{
-	struct rpm_qos_data *qos = data;
-	unsigned long flags;
-	s64 delta_ns;
-	int ret = 0;
-
-	spin_lock_irqsave(&dev->power.lock, flags);
-
-	if (dev->power.max_time_suspended_ns < 0)
-		goto out;
-
-	delta_ns = dev->power.max_time_suspended_ns -
-		ktime_to_ns(ktime_sub(qos->time_now, dev->power.suspend_time));
-	if (delta_ns <= 0) {
-		ret = -EBUSY;
-		goto out;
-	}
-
-	if (qos->constraint_ns > delta_ns || qos->constraint_ns == 0)
-		qos->constraint_ns = delta_ns;
-
- out:
-	spin_unlock_irqrestore(&dev->power.lock, flags);
-
-	return ret;
-}
-
 /**
  * rpm_suspend - Carry out runtime suspend of given device.
  * @dev: Device to suspend.
@@ -349,7 +310,6 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 {
 	int (*callback)(struct device *);
 	struct device *parent = NULL;
-	struct rpm_qos_data qos;
 	int retval;
 
 	trace_rpm_suspend(dev, rpmflags);
@@ -444,37 +404,13 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 		goto out;
 	}
 
-	qos.constraint_ns = __dev_pm_qos_read_value(dev);
-	if (qos.constraint_ns < 0) {
-		/* Negative constraint means "never suspend". */
+	if (__dev_pm_qos_read_value(dev) < 0) {
+		/* Negative PM QoS constraint means "never suspend". */
 		retval = -EPERM;
 		goto out;
 	}
-	qos.constraint_ns *= NSEC_PER_USEC;
-	qos.time_now = ktime_get();
 
 	__update_runtime_status(dev, RPM_SUSPENDING);
-
-	if (!dev->power.ignore_children) {
-		if (dev->power.irq_safe)
-			spin_unlock(&dev->power.lock);
-		else
-			spin_unlock_irq(&dev->power.lock);
-
-		retval = device_for_each_child(dev, &qos,
-					       rpm_update_qos_constraint);
-
-		if (dev->power.irq_safe)
-			spin_lock(&dev->power.lock);
-		else
-			spin_lock_irq(&dev->power.lock);
-
-		if (retval)
-			goto fail;
-	}
-
-	dev->power.suspend_time = qos.time_now;
-	dev->power.max_time_suspended_ns = qos.constraint_ns ? : -1;
 
 	if (dev->pm_domain)
 		callback = dev->pm_domain->ops.runtime_suspend;
@@ -529,8 +465,6 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 
  fail:
 	__update_runtime_status(dev, RPM_ACTIVE);
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
 	dev->power.deferred_resume = false;
 	wake_up_all(&dev->power.wait_queue);
 
@@ -705,9 +639,6 @@ static int rpm_resume(struct device *dev, int rpmflags)
 	if (dev->power.no_callbacks)
 		goto no_callback;	/* Assume success. */
 
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
-
 	__update_runtime_status(dev, RPM_RESUMING);
 
 	if (dev->pm_domain)
@@ -876,6 +807,8 @@ int __pm_runtime_idle(struct device *dev, int rpmflags)
 	might_sleep_if(!(rpmflags & RPM_ASYNC) && !dev->power.irq_safe);
 
 	if (rpmflags & RPM_GET_PUT) {
+		trace_runtime_pm_usage(dev,
+			atomic_read(&dev->power.usage_count)-1);
 		if (!atomic_dec_and_test(&dev->power.usage_count))
 			return 0;
 	}
@@ -908,6 +841,8 @@ int __pm_runtime_suspend(struct device *dev, int rpmflags)
 	might_sleep_if(!(rpmflags & RPM_ASYNC) && !dev->power.irq_safe);
 
 	if (rpmflags & RPM_GET_PUT) {
+		trace_runtime_pm_usage(dev,
+			atomic_read(&dev->power.usage_count)-1);
 		if (!atomic_dec_and_test(&dev->power.usage_count))
 			return 0;
 	}
@@ -940,6 +875,7 @@ int __pm_runtime_resume(struct device *dev, int rpmflags)
 
 	if (rpmflags & RPM_GET_PUT)
 		atomic_inc(&dev->power.usage_count);
+	trace_runtime_pm_usage(dev, atomic_read(&dev->power.usage_count));
 
 	spin_lock_irqsave(&dev->power.lock, flags);
 	retval = rpm_resume(dev, rpmflags);
@@ -1195,6 +1131,7 @@ void pm_runtime_forbid(struct device *dev)
 
 	dev->power.runtime_auto = false;
 	atomic_inc(&dev->power.usage_count);
+	trace_runtime_pm_usage(dev, atomic_read(&dev->power.usage_count));
 	rpm_resume(dev, 0);
 
  out:
@@ -1215,6 +1152,7 @@ void pm_runtime_allow(struct device *dev)
 		goto out;
 
 	dev->power.runtime_auto = true;
+	trace_runtime_pm_usage(dev, atomic_read(&dev->power.usage_count)-1);
 	if (atomic_dec_and_test(&dev->power.usage_count))
 		rpm_idle(dev, RPM_AUTO);
 
@@ -1283,6 +1221,8 @@ static void update_autosuspend(struct device *dev, int old_delay, int old_use)
 		/* If it used to be allowed then prevent it. */
 		if (!old_use || old_delay >= 0) {
 			atomic_inc(&dev->power.usage_count);
+			trace_runtime_pm_usage(dev,
+				atomic_read(&dev->power.usage_count));
 			rpm_resume(dev, 0);
 		}
 	}
@@ -1291,9 +1231,11 @@ static void update_autosuspend(struct device *dev, int old_delay, int old_use)
 	else {
 
 		/* If it used to be prevented then allow it. */
-		if (old_use && old_delay < 0)
+		if (old_use && old_delay < 0) {
 			atomic_dec(&dev->power.usage_count);
-
+			trace_runtime_pm_usage(dev,
+				atomic_read(&dev->power.usage_count));
+		}
 		/* Maybe we can autosuspend now. */
 		rpm_idle(dev, RPM_AUTO);
 	}
@@ -1370,9 +1312,6 @@ void pm_runtime_init(struct device *dev)
 	setup_timer(&dev->power.suspend_timer, pm_suspend_timer_fn,
 			(unsigned long)dev);
 
-	dev->power.suspend_time = ktime_set(0, 0);
-	dev->power.max_time_suspended_ns = -1;
-
 	init_waitqueue_head(&dev->power.wait_queue);
 }
 
@@ -1389,29 +1328,4 @@ void pm_runtime_remove(struct device *dev)
 		pm_runtime_set_suspended(dev);
 	if (dev->power.irq_safe && dev->parent)
 		pm_runtime_put_sync(dev->parent);
-}
-
-/**
- * pm_runtime_update_max_time_suspended - Update device's suspend time data.
- * @dev: Device to handle.
- * @delta_ns: Value to subtract from the device's max_time_suspended_ns field.
- *
- * Update the device's power.max_time_suspended_ns field by subtracting
- * @delta_ns from it.  The resulting value of power.max_time_suspended_ns is
- * never negative.
- */
-void pm_runtime_update_max_time_suspended(struct device *dev, s64 delta_ns)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&dev->power.lock, flags);
-
-	if (delta_ns > 0 && dev->power.max_time_suspended_ns > 0) {
-		if (dev->power.max_time_suspended_ns > delta_ns)
-			dev->power.max_time_suspended_ns -= delta_ns;
-		else
-			dev->power.max_time_suspended_ns = 0;
-	}
-
-	spin_unlock_irqrestore(&dev->power.lock, flags);
 }

@@ -33,52 +33,6 @@
 #include "i915_drv.h"
 
 /**
- * intel_ddc_probe
- *
- */
-bool intel_ddc_probe(struct intel_encoder *intel_encoder, int ddc_bus)
-{
-	struct drm_i915_private *dev_priv = intel_encoder->base.dev->dev_private;
-	u8 out_buf[] = { 0x0, 0x0};
-	u8 buf[2];
-	struct i2c_msg msgs[] = {
-		{
-			.addr = DDC_ADDR,
-			.flags = 0,
-			.len = 1,
-			.buf = out_buf,
-		},
-		{
-			.addr = DDC_ADDR,
-			.flags = I2C_M_RD,
-			.len = 1,
-			.buf = buf,
-		}
-	};
-
-	return i2c_transfer(&dev_priv->gmbus[ddc_bus].adapter, msgs, 2) == 2;
-}
-
-/**
- * intel_connector_update_modes - update connector from edid
- * @connector: DRM connector device to use
- * @edid: previously read EDID information
- */
-int intel_connector_update_modes(struct drm_connector *connector,
-				struct edid *edid)
-{
-	int ret;
-
-	drm_mode_connector_update_edid_property(connector, edid);
-	ret = drm_add_edid_modes(connector, edid);
-	drm_edid_to_eld(connector, edid);
-	connector->display_info.raw_edid = NULL;
-	kfree(edid);
-
-	return ret;
-}
-
-/**
  * intel_ddc_get_modes - get modelist from monitor
  * @connector: DRM connector device to use
  * @adapter: i2c adapter
@@ -89,13 +43,35 @@ int intel_ddc_get_modes(struct drm_connector *connector,
 			struct i2c_adapter *adapter)
 {
 	struct edid *edid;
+	int ret = 0;
 
 	edid = drm_get_edid(connector, adapter);
-	if (!edid)
-		return 0;
+	if (edid) {
+		drm_mode_connector_update_edid_property(connector, edid);
+		ret = drm_add_edid_modes(connector, edid);
+		drm_edid_to_eld(connector, edid);
+		connector->display_info.raw_edid = NULL;
+		kfree(edid);
+	}
 
-	return intel_connector_update_modes(connector, edid);
+	return ret;
 }
+
+void intel_cleanup_modes(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode = NULL;
+	struct drm_display_mode *t = NULL;
+
+	list_for_each_entry_safe(mode, t, &connector->probed_modes, head)
+		drm_mode_remove(connector, mode);
+
+	list_for_each_entry_safe(mode, t, &connector->modes, head)
+		drm_mode_remove(connector, mode);
+
+	list_for_each_entry_safe(mode, t, &connector->user_modes, head)
+		drm_mode_remove(connector, mode);
+}
+
 
 static const struct drm_prop_enum_list force_audio_names[] = {
 	{ HDMI_AUDIO_OFF_DVI, "force-dvi" },
@@ -147,6 +123,34 @@ intel_attach_broadcast_rgb_property(struct drm_connector *connector)
 			return;
 
 		dev_priv->broadcast_rgb_property = prop;
+	}
+
+	drm_connector_attach_property(connector, prop, 0);
+}
+
+static const struct drm_prop_enum_list pfit_names[] = {
+	{ 0, "Auto scale" },
+	{ 1, "PillarBox" },
+	{ 2, "LetterBox" },
+};
+
+void
+intel_attach_force_pfit_property(struct drm_connector *connector)
+{
+	struct drm_device *dev = connector->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_property *prop;
+
+	prop = dev_priv->force_pfit_property;
+	if (prop == NULL) {
+		prop = drm_property_create_enum(dev, 0,
+						"pfit",
+						pfit_names,
+						ARRAY_SIZE(pfit_names));
+		if (prop == NULL)
+			return;
+
+		dev_priv->force_pfit_property = prop;
 	}
 
 	drm_connector_attach_property(connector, prop, 0);

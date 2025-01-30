@@ -51,6 +51,7 @@ obj-$(CONFIG_TOUCHSCREEN_ST1232)	+= st1232.o
 obj-$(CONFIG_TOUCHSCREEN_STMPE)		+= stmpe-ts.o
 obj-$(CONFIG_TOUCHSCREEN_TI_TSCADC)	+= ti_tscadc.o
 obj-$(CONFIG_TOUCHSCREEN_TNETV107X)	+= tnetv107x-ts.o
+obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_RMI)	+= synaptics_i2c_rmi.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHIT213)	+= touchit213.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHRIGHT)	+= touchright.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHWIN)	+= touchwin.o
@@ -69,3 +70,29 @@ obj-$(CONFIG_TOUCHSCREEN_WM97XX_MAINSTONE)	+= mainstone-wm97xx.o
 obj-$(CONFIG_TOUCHSCREEN_WM97XX_ZYLONITE)	+= zylonite-wm97xx.o
 obj-$(CONFIG_TOUCHSCREEN_W90X900)	+= w90p910_ts.o
 obj-$(CONFIG_TOUCHSCREEN_TPS6507X)	+= tps6507x-ts.o
+# Josh add for Himax HX8528 driver ++
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528)	+= hx8528.o
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528_ME372CGCD)	+= hx8528_me372cgcd.o
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528_ME372CL)  += hx8528_me372cl.o
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528_ME372CL_C58)  += hx8528_me372cl_c58.o
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528_A12)  += hx8528_a12.o
+# Josh add for Himax HX8528 driver --
+
+# Jui-Chuan add for Atmel Touch ++
+obj-$(CONFIG_TOUCHSCREEN_ATMEL_MXT1664S)      += atmel_mxt_1664s.o
+# Jui-Chuan add for Atmel Touch --
+
+# add by leo for ELAN touch ++
+obj-$(CONFIG_TOUCHSCREEN_ELAN_EKTH3374)		+= ektf3k.o
+# add by leo for ELAN touch --
+
+# add by leo for Goodix touch ++
+obj-$(CONFIG_TOUCHSCREEN_GOODIX_GT927)		+= gt927.o
+obj-$(CONFIG_TOUCHSCREEN_GOODIX_GT927)		+= gt927_tool.o
+obj-$(CONFIG_TOUCHSCREEN_GOODIX_GT927)		+= gt927_update.o
+obj-$(CONFIG_TOUCHSCREEN_GOODIX_GT927)		+= gt927_openshort.o
+# add by leo for Goodix touch --
+
+# add by leo for Himax touch D48 ++
+obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX8528_P72G)  += hx8528_p72g.o
+# add by leo for Himax touch D48 --

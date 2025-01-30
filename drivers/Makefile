@@ -11,6 +11,14 @@ obj-y				+= gpio/
 obj-$(CONFIG_PCI)		+= pci/
 obj-$(CONFIG_PARISC)		+= parisc/
 obj-$(CONFIG_RAPIDIO)		+= rapidio/
+# chris ((( battery driver
+obj-$(CONFIG_ME302C_BATTERY)	+= power/battery/
+obj-$(CONFIG_ME372CG_BATTERY)	+= power/battery/
+obj-$(CONFIG_ME372CL_BATTERY)	+= power/battery/
+obj-$(CONFIG_ME175CG_BATTERY)	+= power/battery/
+obj-$(CONFIG_PF400CG_BATTERY)	+= power/battery/
+obj-$(CONFIG_A400CG_BATTERY)   += power/battery/
+# )))
 obj-y				+= video/
 obj-y				+= idle/
 obj-$(CONFIG_ACPI)		+= acpi/
@@ -26,6 +34,8 @@ obj-$(CONFIG_DMA_ENGINE)	+= dma/
 obj-$(CONFIG_VIRTIO)		+= virtio/
 obj-$(CONFIG_XEN)		+= xen/
 
+# mmc/host/sdhci_pci.c/prob() rely flis call to disconnect shim.
+obj-y				+= platform/
 # regulators early, since some subsystems rely on them to initialize
 obj-$(CONFIG_REGULATOR)		+= regulator/
 
@@ -100,6 +110,7 @@ obj-$(CONFIG_CPU_IDLE)		+= cpuidle/
 obj-y				+= mmc/
 obj-$(CONFIG_MEMSTICK)		+= memstick/
 obj-y				+= leds/
+obj-$(CONFIG_SWITCH)		+= switch/
 obj-$(CONFIG_INFINIBAND)	+= infiniband/
 obj-$(CONFIG_SGI_SN)		+= sn/
 obj-y				+= firmware/
@@ -118,12 +129,13 @@ obj-$(CONFIG_BCMA)		+= bcma/
 obj-$(CONFIG_VHOST_NET)		+= vhost/
 obj-$(CONFIG_VLYNQ)		+= vlynq/
 obj-$(CONFIG_STAGING)		+= staging/
-obj-y				+= platform/
+#obj-y				+= platform/
 obj-y				+= ieee802154/
 #common clk code
 obj-y				+= clk/
 
 obj-$(CONFIG_HWSPINLOCK)	+= hwspinlock/
+obj-$(CONFIG_EXTCON)		+= extcon/
 obj-$(CONFIG_NFC)		+= nfc/
 obj-$(CONFIG_IOMMU_SUPPORT)	+= iommu/
 obj-$(CONFIG_REMOTEPROC)	+= remoteproc/
@@ -134,3 +146,4 @@ obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
 obj-$(CONFIG_HYPERV)		+= hv/
 
 obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
+obj-y				+= simcddrv/

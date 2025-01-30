@@ -27,11 +27,21 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/dmi.h>
+#include <linux/pci.h>
+#include <acpi/acpi.h>
+#include "../../acpi/acpica/achware.h"
 
 #include "xhci.h"
 
 #define DRIVER_AUTHOR "Sarah Sharp"
 #define DRIVER_DESC "'eXtensible' Host Controller (xHC) Driver"
+
+static struct xhci_hcd *xhci_host;
+
+#ifdef CONFIG_USB_DWC_OTG_XCEIV
+#include "xhci-dwc.c"
+#define	XHCI_PLATFORM_DRIVER		xhci_dwc_driver
+#endif
 
 /* Some 0.95 hardware can't handle the chain bit on a Link TRB being cleared */
 static int link_quirk;
@@ -205,6 +215,102 @@ static int xhci_free_msi(struct xhci_hcd *xhci)
 }
 
 /*
+ * Free IRQs
+ * free all IRQs request
+ */
+static void xhci_free_irq(struct xhci_hcd *xhci)
+{
+	struct pci_dev *pdev = to_pci_dev(xhci_to_hcd(xhci)->self.controller);
+	int ret;
+
+	/* return if using legacy interrupt */
+	if (xhci_to_hcd(xhci)->irq > 0)
+		return;
+
+	ret = xhci_free_msi(xhci);
+	if (!ret)
+		return;
+	if (pdev->irq > 0)
+		free_irq(pdev->irq, xhci_to_hcd(xhci));
+
+	return;
+}
+
+#ifdef CONFIG_ACPI
+bool pci_check_pme_enable_and_status(struct pci_dev *dev)
+{
+	int pmcsr_pos;
+	u16 pmcsr;
+	bool ret = false;
+
+	if (!dev->pm_cap)
+		return false;
+
+	pmcsr_pos = dev->pm_cap + PCI_PM_CTRL;
+	pci_read_config_word(dev, pmcsr_pos, &pmcsr);
+	if (!(pmcsr & PCI_PM_CTRL_PME_STATUS))
+		return false;
+
+	if (pmcsr & PCI_PM_CTRL_PME_ENABLE)
+		return true;
+
+	return ret;
+}
+
+static void xhci_byt_pm_check_work(struct work_struct *work)
+{
+	struct usb_hcd		*hcd;
+	struct pci_dev		*pdev;
+	u32			gpe_sts = 0;
+	u32			gpe_en = 0;
+	unsigned long		flags;
+	int			pmcsr_pos = 0;
+	u16			pmcsr = 0;
+
+	if (xhci_host)
+		hcd = xhci_to_hcd(xhci_host);
+	else
+		return;
+
+	pdev = to_pci_dev(hcd->self.controller);
+
+	/* No need to put XHCI back to D0, as PMC will do */
+	msleep(20);
+
+	if (pci_check_pme_enable_and_status(pdev)) {
+		/* wait for PME polling to be done */
+		xhci_dbg(xhci_host, "PCI STS/EN set\n");
+		msleep(1200);
+	}
+
+done:
+	/* sometimes PME received in D0 which is not expected, clear them */
+	pmcsr_pos = pdev->pm_cap + PCI_PM_CTRL;
+	pci_read_config_word(pdev, pmcsr_pos, &pmcsr);
+
+	if (pmcsr & 0x8100) {
+		/* Clear PME_STS and PME_EN anyway */
+		pci_write_config_word(pdev, pmcsr_pos, 0x8008);
+		pci_read_config_word(pdev, pmcsr_pos, &pmcsr);
+	}
+
+	xhci_dbg(xhci_host, "PCI STS/EN = 0x%x\n", pmcsr);
+
+	/* clear status of GPE.PME_B0 */
+	acpi_hw_register_write(0xf1, 0x2000);
+
+	/* re-enable GPE.PME_B0 interrupt */
+	acpi_hw_register_read(0xf2, &gpe_en);
+	gpe_en = gpe_en | 0x2000;
+	acpi_hw_register_write(0xf2, gpe_en);
+
+	spin_lock_irqsave(&xhci_host->lock, flags);
+	xhci_host->pm_check_flag = 0;
+	spin_unlock_irqrestore(&xhci_host->lock, flags);
+}
+#endif
+
+/*
  * Set up MSI
  */
 static int xhci_setup_msi(struct xhci_hcd *xhci)
@@ -225,29 +331,24 @@ static int xhci_setup_msi(struct xhci_hcd *xhci)
 		pci_disable_msi(pdev);
 	}
 
+#ifdef CONFIG_ACPI
+	/* Workaround: register a shared interrupt handler on ACPI to
+	 * to handle wake up event */
+	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
+		pdev->device == PCI_DEVICE_ID_INTEL_BYT_USH) {
+		xhci_host = xhci;
+		INIT_WORK(&xhci->pm_check, xhci_byt_pm_check_work);
+
+		/* map PMC related MMIO for this workaround */
+		xhci_host->pmc_base_addr = ioremap_nocache(0xfed03000, 0x1000);
+		ret = request_irq(9, (irq_handler_t)xhci_byt_pm_irq,
+			IRQF_SHARED, "xhci-acpi-wa", xhci_to_hcd(xhci));
+		if (ret)
+			xhci_dbg(xhci, "fail request interrupt handler\n");
+	}
+#endif
+
 	return ret;
-}
-
-/*
- * Free IRQs
- * free all IRQs request
- */
-static void xhci_free_irq(struct xhci_hcd *xhci)
-{
-	struct pci_dev *pdev = to_pci_dev(xhci_to_hcd(xhci)->self.controller);
-	int ret;
-
-	/* return if using legacy interrupt */
-	if (xhci_to_hcd(xhci)->irq > 0)
-		return;
-
-	ret = xhci_free_msi(xhci);
-	if (!ret)
-		return;
-	if (pdev->irq > 0)
-		free_irq(pdev->irq, xhci_to_hcd(xhci));
-
-	return;
 }
 
 /*
@@ -315,6 +416,10 @@ static void xhci_cleanup_msix(struct xhci_hcd *xhci)
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
 	struct pci_dev *pdev = to_pci_dev(hcd->self.controller);
 
+	/* No need to cleanup msi if we have XHCI_BROKEN_MSI flag */
+	if (xhci->quirks & XHCI_BROKEN_MSI)
+		return;
+
 	xhci_free_irq(xhci);
 
 	if (xhci->msix_entries) {
@@ -350,7 +455,7 @@ static int xhci_try_enable_msi(struct usb_hcd *hcd)
 	 * generate interrupts.  Don't even try to enable MSI.
 	 */
 	if (xhci->quirks & XHCI_BROKEN_MSI)
-		goto legacy_irq;
+		return 0;
 
 	/* unregister the legacy interrupt */
 	if (hcd->irq)
@@ -371,7 +476,6 @@ static int xhci_try_enable_msi(struct usb_hcd *hcd)
 		return -EINVAL;
 	}
 
- legacy_irq:
 	/* fall back to legacy interrupt*/
 	ret = request_irq(pdev->irq, &usb_hcd_irq, IRQF_SHARED,
 			hcd->irq_descr, hcd);
@@ -623,7 +727,6 @@ int xhci_run(struct usb_hcd *hcd)
 		return xhci_run_finished(xhci);
 
 	xhci_dbg(xhci, "xhci_run\n");
-
 	ret = xhci_try_enable_msi(hcd);
 	if (ret)
 		return ret;
@@ -1152,8 +1255,6 @@ static int xhci_check_args(struct usb_hcd *hcd, struct usb_device *udev,
 	}
 
 	xhci = hcd_to_xhci(hcd);
-	if (xhci->xhc_state & XHCI_STATE_HALTED)
-		return -ENODEV;
 
 	if (check_virt_dev) {
 		if (!udev->slot_id || !xhci->devs[udev->slot_id]) {
@@ -1169,6 +1270,9 @@ static int xhci_check_args(struct usb_hcd *hcd, struct usb_device *udev,
 			return -EINVAL;
 		}
 	}
+
+	if (xhci->xhc_state & XHCI_STATE_HALTED)
+		return -ENODEV;
 
 	return 1;
 }
@@ -3995,6 +4099,10 @@ int xhci_update_device(struct usb_hcd *hcd, struct usb_device *udev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int		ret;
 
+	/* Just return if XHCI_LPM_DISABLE_QUIRK set */
+	if (xhci->quirks & XHCI_LPM_DISABLE_QUIRK)
+		return 0;
+
 	ret = xhci_usb2_software_lpm_test(hcd, udev);
 	if (!ret) {
 		xhci_dbg(xhci, "software LPM test succeed\n");
@@ -4222,18 +4330,34 @@ MODULE_LICENSE("GPL");
 
 static int __init xhci_hcd_init(void)
 {
-	int retval;
+	int retval = 0;
+#ifdef XHCI_PLATFORM_DRIVER
+	retval = platform_driver_register(&XHCI_PLATFORM_DRIVER);
 
+	if (retval < 0) {
+		printk(KERN_DEBUG "Problem registering Platform driver.");
+		return retval;
+	}
+#endif
+
+#ifdef CONFIG_PCI
+#ifdef CONFIG_USB_USH_HSIC
+	return xhci_register_ush_pci();
+#else
 	retval = xhci_register_pci();
+#endif
+
 	if (retval < 0) {
 		printk(KERN_DEBUG "Problem registering PCI driver.");
 		return retval;
 	}
+
 	retval = xhci_register_plat();
 	if (retval < 0) {
 		printk(KERN_DEBUG "Problem registering platform driver.");
 		goto unreg_pci;
 	}
+#endif
 	/*
 	 * Check the compiler generated sizes of structures that must be laid
 	 * out in specific ways for hardware access.
@@ -4253,15 +4377,30 @@ static int __init xhci_hcd_init(void)
 	BUILD_BUG_ON(sizeof(struct xhci_run_regs) != (8+8*128)*32/8);
 	BUILD_BUG_ON(sizeof(struct xhci_doorbell_array) != 256*32/8);
 	return 0;
+#ifdef CONFIG_PCI
 unreg_pci:
+#ifdef CONFIG_USB_USH_HSIC
+	xhci_unregister_ush_pci();
+#else
 	xhci_unregister_pci();
+#endif
 	return retval;
+#endif
 }
 module_init(xhci_hcd_init);
 
 static void __exit xhci_hcd_cleanup(void)
 {
+#ifdef XHCI_PLATFORM_DRIVER
+	platform_driver_unregister(&XHCI_PLATFORM_DRIVER);
+#endif
+#ifdef CONFIG_PCI
+#ifdef CONFIG_USB_USH_HSIC
+	xhci_unregister_ush_pci();
+#else
 	xhci_unregister_pci();
+#endif
 	xhci_unregister_plat();
+#endif
 }
 module_exit(xhci_hcd_cleanup);
